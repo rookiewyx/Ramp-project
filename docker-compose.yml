@@ -1,0 +1,40 @@
+# 本地开发依赖：MySQL（业务数据/审计）、Redis（队列/限流/缓存）、Jaeger（链路追踪）
+# 启动：docker compose up -d     停止：docker compose down
+services:
+  mysql:
+    image: mysql:8.4
+    container_name: ramp-mysql
+    environment:
+      MYSQL_ROOT_PASSWORD: ramp_root_pw
+      MYSQL_DATABASE: ramp
+      MYSQL_USER: ramp
+      MYSQL_PASSWORD: ramp_dev_pw
+      TZ: Asia/Shanghai
+    command: ["--character-set-server=utf8mb4", "--collation-server=utf8mb4_0900_ai_ci"]
+    ports: ["3306:3306"]
+    volumes: ["mysql_data:/var/lib/mysql"]
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "-uroot", "-pramp_root_pw"]
+      interval: 10s
+      retries: 10
+
+  redis:
+    image: redis:7.4-alpine
+    container_name: ramp-redis
+    command: ["redis-server", "--appendonly", "yes"]
+    ports: ["6379:6379"]
+    volumes: ["redis_data:/data"]
+
+  jaeger:
+    image: jaegertracing/all-in-one:1.62.0
+    container_name: ramp-jaeger
+    environment:
+      COLLECTOR_OTLP_ENABLED: "true"
+    ports:
+      - "16686:16686"   # Web UI
+      - "4317:4317"     # OTLP gRPC
+      - "4318:4318"     # OTLP HTTP
+
+volumes:
+  mysql_data:
+  redis_data:

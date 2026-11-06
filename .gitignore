@@ -1,0 +1,25 @@
+.venv/
+__pycache__/
+*.pyc
+.env
+.pytest_cache/
+.ruff_cache/
+
+# 数据集和生成数据体积大，不入库
+data/raw/
+data/processed/
+data/synthetic/
+data/synthetic_*/
+!data/README.md
+
+# 缓存（setup.ps1 把它们放在项目盘，避免占 C 盘）
+.hf_cache/
+.uv_cache/
+.uv_python/
+data/MANIFEST.json
+
+# 评测平台数据库（标注成果用 evalhub export 导出到 evalsets/ 再提交）
+data/*.db
+
+# 评测报告（含逐张预测结果）
+reports/

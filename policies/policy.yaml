@@ -1,0 +1,48 @@
+# 报销制度的结构化版本，供审核 Agent 使用。
+# 人读的版本是 expense_policy.md，两份必须一致；tests/test_policy.py 会检查本文件和 gen_synthetic.py 的常量是否一致。
+# 对应 Ramp 的做法：把长篇制度文档转换成 Agent 能执行、能引用的结构化格式。
+
+company:
+  name: 星河数智科技有限公司
+  tax_id: 91310000MA1XHSZ00X
+
+limits:
+  hotel_per_night: {tier1: 600, other: 400}        # R1
+  tier1_cities: [北京, 上海, 广州, 深圳]
+  meal_per_day: 150                                 # R2 出差个人餐饮
+  entertainment_per_head: 300                       # R2 业务招待
+  taxi_per_ride: 100                                # R3
+  submit_within_days: 90                            # R5
+  preapproval_threshold: 5000                       # R7
+
+# R5 差旅类：开票日期须在出差期间（市内打车不在其中，见 R5 条文）
+travel_categories: [hotel, meal, train, flight]
+
+# R3 交通舱位：明细里出现这些词视为超标
+travel_class_over: [一等座, 商务座, 特等座, 头等舱, 公务舱, 商务舱]
+
+# R8 不予报销关键词：命中只是线索，由大模型确认明细本身是否就是烟酒/娱乐/罚款
+# （“红酒杯”“茅台镇特产酱香饼”含关键词，但不是酒）。没有大模型时按命中处理。
+prohibited_keywords:
+  烟酒: [白酒, 啤酒, 红酒, 葡萄酒, 黄酒, 洋酒, 香烟, 卷烟, 烟草, 雪茄, 茅台, 五粮液]
+  个人娱乐: [KTV, 足浴, 按摩, 洗浴, 游戏点卡]
+  罚款滞纳金: [罚款, 罚金, 滞纳金]
+
+# 常见的正常明细：明细主体（不含括号注释）里出现这些词就不需要大模型判断。
+# 不在两份名单里的明细，才交给大模型判断是否属于 R8（例如“53%vol 酱香型 500ml”）。
+safe_item_keywords: [餐饮服务, 住宿, 客运服务, 高铁, 动车, 二等座, 经济舱, 会议注册, 会议费, 办公用品,
+                     停车费, 过路费, 通行费, 打印, 快递]
+
+# 每条规则的原文（用于在结论里引用）和违规时的结论
+rules:
+  R1: {outcome: review, title: 住宿标准, clause: "一线城市（北京、上海、广州、深圳）每晚不超过 600 元，其他城市每晚不超过 400 元。超标部分需人工审核。"}
+  R2: {outcome: review, title: 餐饮标准, clause: "出差期间个人餐饮每人每天不超过 150 元；业务招待须注明招待人数，人均不超过 300 元。超标需人工审核。"}
+  R3: {outcome: review, title: 交通标准, clause: "飞机限经济舱，高铁/动车限二等座。市内打车单笔不超过 100 元；超过的，须在报销说明中写明打车原因且原因成立，否则需人工审核。原因成立，指客观上无法使用公共交通或因公务必须打车，例如深夜或凌晨无公共交通、携带行李箱等大件物品、恶劣天气、紧急公务；个人习惯或便利、与公务无关的行程、笼统的表述、只解释金额而未说明为何必须打车，都不算原因成立。"}
+  R4: {outcome: reject, title: 发票抬头, clause: "发票购买方名称须为公司全称，纳税人识别号须一致。抬头或税号不符的发票不予报销。"}
+  R5_outside_trip: {outcome: reject, title: 发票日期, clause: "差旅类发票（住宿、出差期间餐饮、火车、飞机）日期须在出差起止日期内；市内打车不受此限。"}
+  R5_late: {outcome: review, title: 提交时限, clause: "所有发票须在开票日起 90 天内提交报销，逾期需人工审核。"}
+  R6: {outcome: reject, title: 重复报销, clause: "同一张发票（以发票号码为准）不得重复报销，重复提交直接驳回。"}
+  R7: {outcome: review, title: 大额预审批, clause: "单笔金额超过 5000 元须附部门负责人预审批记录，否则需人工审核。"}
+  R8: {outcome: reject, title: 不予报销项目, clause: "烟酒、个人娱乐消费、罚款和滞纳金一律不予报销。"}
+  R9: {outcome: reject, title: 附件要求, clause: "每笔报销须附对应发票；缺少发票的报销单退回补充。"}
+  AMT: {outcome: review, title: 金额一致, clause: "报销金额应与发票价税合计一致。（系统校验项，制度未单列）"}

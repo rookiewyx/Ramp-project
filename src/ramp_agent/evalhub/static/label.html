@@ -1,0 +1,250 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>RAMP 标注</title>
+<style>
+  :root {
+    --bg: #f6f5f2; --card: #ffffff; --text: #1f1e1b; --muted: #6b6a64; --line: #e3e1da;
+    --accent: #3b5bdb; --on-accent: #ffffff; --approve: #2f7d4f; --review: #b7791f; --reject: #c0392b; --soft: #eef1fb;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #18181a; --card: #222226; --text: #ecebe6; --muted: #a09f99; --line: #34343a;
+            --accent: #8ea2ff; --on-accent: #15161c; --approve: #5cc28a; --review: #e3b04b; --reject: #ef7a6e; --soft: #2a2d3a; }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text);
+         font: 15px/1.6 -apple-system, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif; }
+  header { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; padding: 12px 20px;
+           background: var(--card); border-bottom: 1px solid var(--line); position: sticky; top: 0; z-index: 2; }
+  header h1 { font-size: 16px; margin: 0 8px 0 0; font-weight: 600; }
+  select, input[type=text], textarea { font: inherit; color: var(--text); background: var(--bg);
+           border: 1px solid var(--line); border-radius: 6px; padding: 5px 8px; }
+  .progress { flex: 1; min-width: 160px; display: flex; align-items: center; gap: 8px; color: var(--muted); font-size: 13px; }
+  .bar { flex: 1; height: 6px; background: var(--line); border-radius: 3px; overflow: hidden; }
+  .bar > div { height: 100%; background: var(--accent); width: 0; transition: width .2s; }
+  main { display: grid; grid-template-columns: minmax(0, 1fr) 340px; gap: 16px; padding: 16px 20px 120px; max-width: 1280px; margin: 0 auto; }
+  @media (max-width: 900px) { main { grid-template-columns: 1fr; padding-bottom: 16px; } footer { position: static; } }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 16px 18px; }
+  .card h2 { font-size: 15px; margin: 0 0 10px; }
+  .kv { display: grid; grid-template-columns: 110px 1fr; gap: 4px 12px; font-size: 14px; }
+  .kv dt { color: var(--muted); }
+  .kv dd { margin: 0; overflow-wrap: anywhere; }
+  .note { background: var(--soft); border-radius: 8px; padding: 10px 12px; margin: 12px 0; white-space: pre-wrap; }
+  table { width: 100%; border-collapse: collapse; font-size: 14px; margin-top: 6px; }
+  th, td { text-align: left; padding: 6px 4px; border-bottom: 1px solid var(--line); }
+  td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
+  .warn { color: var(--reject); font-weight: 600; }
+  .rules { font-size: 13px; max-height: calc(100vh - 140px); overflow: auto; }
+  .rule { padding: 8px 0; border-bottom: 1px solid var(--line); }
+  .rule b { font-weight: 600; }
+  .tag { font-size: 12px; padding: 1px 6px; border-radius: 4px; margin-left: 4px; }
+  .tag.review { background: color-mix(in srgb, var(--review) 18%, transparent); color: var(--review); }
+  .tag.reject { background: color-mix(in srgb, var(--reject) 18%, transparent); color: var(--reject); }
+  footer { position: fixed; left: 0; right: 0; bottom: 0; background: var(--card); border-top: 1px solid var(--line);
+           padding: 12px 20px; display: flex; flex-wrap: wrap; gap: 10px; align-items: center; z-index: 2; }
+  .dec { border: 2px solid var(--line); background: transparent; color: var(--text); border-radius: 8px;
+         padding: 8px 16px; font: inherit; cursor: pointer; }
+  .dec[data-d=approve].on { border-color: var(--approve); color: var(--approve); }
+  .dec[data-d=review].on { border-color: var(--review); color: var(--review); }
+  .dec[data-d=reject].on { border-color: var(--reject); color: var(--reject); }
+  .dec kbd, .hint kbd { font: 12px monospace; border: 1px solid var(--line); border-radius: 3px; padding: 0 4px; margin-left: 4px; }
+  .rulebox { display: flex; flex-wrap: wrap; gap: 4px 10px; font-size: 13px; }
+  .rulebox label { white-space: nowrap; }
+  #note { flex: 1; min-width: 200px; height: 38px; resize: vertical; }
+  .primary:disabled { opacity: .45; cursor: not-allowed; }
+  .primary { background: var(--accent); color: var(--on-accent); border: 0; border-radius: 8px; padding: 9px 18px; font: inherit; cursor: pointer; }
+  .ghost { background: transparent; color: var(--text); border: 1px solid var(--line); border-radius: 8px; padding: 8px 12px; font: inherit; cursor: pointer; }
+  .hint { color: var(--muted); font-size: 12px; width: 100%; }
+  #msg { font-size: 13px; color: var(--muted); }
+  .empty { color: var(--muted); padding: 40px; text-align: center; }
+</style>
+</head>
+<body>
+<header>
+  <h1>RAMP 报销标注</h1>
+  <select id="ds" aria-label="评测集"></select>
+  <label>标注人 <input id="who" type="text" size="8" placeholder="你的名字"></label>
+  <label><input id="onlyTodo" type="checkbox" checked> 跳过已标注</label>
+  <div class="progress"><span id="pg">-</span><div class="bar"><div id="bar"></div></div></div>
+</header>
+
+<main>
+  <section>
+    <div class="card" id="caseCard"><div class="empty">选择评测集并填写标注人后开始</div></div>
+  </section>
+  <aside class="card rules">
+    <h2>报销制度</h2>
+    <div id="policy"></div>
+  </aside>
+</main>
+
+<footer>
+  <button class="dec" data-d="approve">建议通过<kbd>1</kbd></button>
+  <button class="dec" data-d="review">需人工审核<kbd>2</kbd></button>
+  <button class="dec" data-d="reject">建议驳回<kbd>3</kbd></button>
+  <div class="rulebox" id="rulebox"></div>
+  <textarea id="note" placeholder="理由（可选，有争议时请写）"></textarea>
+  <label><input id="unsure" type="checkbox"> 我也拿不准</label>
+  <button class="ghost" id="prev">上一条</button>
+  <button class="primary" id="save">保存并下一条</button>
+  <span id="msg"></span>
+  <div class="hint">按你自己对制度的理解独立判断，页面不会显示系统结论或其他人的标注。快捷键：<kbd>1</kbd><kbd>2</kbd><kbd>3</kbd> 选结论，<kbd>Ctrl</kbd>+<kbd>Enter</kbd> 保存，<kbd>←</kbd><kbd>→</kbd> 翻页（输入框外）。“拿不准”的用例不参与打分，会单独列出讨论。</div>
+</footer>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const CAT = {hotel: "住宿", meal: "出差餐饮", entertainment: "业务招待", taxi: "市内打车", train: "火车",
+             flight: "飞机", conference: "会议", other: "其他"};
+const state = { vid: null, cases: [], idx: -1, decision: null, policy: null };
+
+function store(k, v) { try { localStorage.setItem(k, v); } catch (e) {} }
+function load(k) { try { return localStorage.getItem(k) || ""; } catch (e) { return ""; } }
+function labeler() { return $("who").value.trim(); }
+
+async function api(path, opts) {
+  const r = await fetch(path, opts);
+  if (!r.ok) { const t = await r.json().catch(() => ({})); throw new Error(t.detail || r.statusText); }
+  return r.json();
+}
+
+function el(tag, attrs = {}, ...kids) {
+  const e = document.createElement(tag);
+  for (const [k, v] of Object.entries(attrs)) { if (k === "class") e.className = v; else e.setAttribute(k, v); }
+  for (const k of kids) e.append(k instanceof Node ? k : document.createTextNode(k ?? ""));
+  return e;
+}
+
+async function init() {
+  $("who").value = load("ramp.labeler");
+  state.policy = await api("/api/policy");
+  const pol = $("policy"), box = $("rulebox");
+  pol.append(el("div", {class: "rule"}, el("b", {}, "公司抬头 "), state.policy.company.name,
+    el("br"), el("b", {}, "税号 "), state.policy.company.tax_id));
+  for (const r of state.policy.rules) {
+    pol.append(el("div", {class: "rule"}, el("b", {}, `${r.id} ${r.title}`),
+      el("span", {class: "tag " + r.outcome}, r.outcome === "reject" ? "违反→驳回" : "违反→人工"), el("br"), r.clause));
+    const cb = el("input", {type: "checkbox", value: r.id});
+    box.append(el("label", {title: r.clause}, cb, r.id));
+  }
+  const vs = await api("/api/datasets");
+  const sel = $("ds");
+  if (!vs.length) sel.append(el("option", {}, "（还没有审核评测集，请先用 evalhub import 导入）"));
+  for (const v of vs) sel.append(el("option", {value: v.version_id}, `${v.ref} · ${v.total} 条 · ${v.status === "frozen" ? "已冻结" : "草稿"}`));
+  const last = load("ramp.vid");
+  if (last && vs.some(v => String(v.version_id) === last)) sel.value = last;
+  sel.onchange = () => { store("ramp.vid", sel.value); sel.blur(); start(); };
+  $("who").onchange = () => { store("ramp.labeler", labeler()); $("who").blur(); start(); };
+  $("who").onkeydown = (e) => { if (e.key === "Enter") $("who").blur(); };   // 回车确认，焦点离开输入框后快捷键才生效
+  if (labeler() && vs.length) start();
+}
+
+async function start() {
+  state.vid = $("ds").value;
+  if (!labeler()) { $("msg").textContent = "请先填写标注人"; return; }
+  try {
+    const d = await api(`/api/versions/${state.vid}/cases?labeler=${encodeURIComponent(labeler())}`);
+    state.cases = d.cases;
+    showProgress(d);
+    const todo = state.cases.findIndex(c => !c.decision);
+    go(todo >= 0 ? todo : 0);
+  } catch (e) { $("msg").textContent = e.message; }
+}
+
+function showProgress(d) {
+  $("pg").textContent = `${d.ref}：已标 ${d.done} / ${d.total}${d.status === "frozen" ? "（已冻结，只读）" : ""}`;
+  $("bar").style.width = (d.total ? 100 * d.done / d.total : 0) + "%";
+}
+
+async function go(i) {
+  if (i < 0 || i >= state.cases.length) return;
+  state.idx = i;
+  const c = await api(`/api/cases/${state.cases[i].case_id}?labeler=${encodeURIComponent(labeler())}`);
+  render(c);
+}
+
+function render(c) {
+  const k = c.claim, inv = k.invoice, card = $("caseCard");
+  card.replaceChildren();
+  card.append(el("h2", {}, `第 ${state.idx + 1} / ${state.cases.length} 条 · ${c.key}`));
+  const kv = el("dl", {class: "kv"});
+  const add = (a, b) => { if (b !== null && b !== undefined && b !== "") kv.append(el("dt", {}, a), el("dd", {}, String(b))); };
+  add("类别", CAT[k.category] || k.category);
+  add("报销金额", `${k.amount} 元`);
+  add("提交日期", k.submit_date);
+  add("出差城市", k.city);
+  if (k.trip_start) add("出差日期", `${k.trip_start} ~ ${k.trip_end}`);
+  add("住宿晚数", k.nights);
+  add("招待人数（表单）", k.headcount);
+  add("预审批编号", k.preapproval_id);
+  card.append(kv);
+  card.append(el("div", {class: "note"}, "报销说明：", k.note || "（空）"));
+  if (!k.has_attachment) {
+    card.append(el("p", {class: "warn"}, "未附发票文件"));
+  }
+  const ikv = el("dl", {class: "kv"});
+  const addi = (a, b) => ikv.append(el("dt", {}, a), el("dd", {}, b ?? "—"));
+  addi("发票号码", inv.invoice_no); addi("开票日期", inv.issue_date); addi("销售方", inv.seller);
+  addi("购买方", inv.buyer_name); addi("购买方税号", inv.buyer_tax_id); addi("价税合计", inv.total != null ? `${inv.total} 元` : null);
+  card.append(el("h2", {style: "margin-top:16px"}, k.has_attachment ? "发票" : "发票（员工填写的信息，未附文件）"), ikv);
+  const tb = el("table", {}, el("tr", {}, el("th", {}, "明细"), el("th", {class: "num"}, "金额")));
+  for (const it of inv.items || []) tb.append(el("tr", {}, el("td", {}, it.name), el("td", {class: "num"}, it.amount.toFixed(2))));
+  card.append(tb);
+
+  const lb = c.label || {};
+  setDecision(lb.decision || null);
+  for (const cb of $("rulebox").querySelectorAll("input")) cb.checked = (lb.rules || []).includes(cb.value);
+  $("note").value = lb.note || "";
+  $("unsure").checked = !!lb.unsure;
+  $("save").disabled = c.frozen;
+  $("msg").textContent = c.label ? "已标注过，可修改" : "";
+  window.scrollTo(0, 0);
+}
+
+function setDecision(d) {
+  state.decision = d;
+  for (const b of document.querySelectorAll(".dec")) b.classList.toggle("on", b.dataset.d === d);
+}
+
+async function save() {
+  if (!state.decision) { $("msg").textContent = "请先选择结论"; return; }
+  const c = state.cases[state.idx];
+  const rules = [...$("rulebox").querySelectorAll("input:checked")].map(x => x.value);
+  if (state.decision !== "approve" && !rules.length && !$("unsure").checked) {
+    $("msg").textContent = "转人工或驳回时，请勾选依据的条款";
+    return;
+  }
+  try {
+    const r = await api(`/api/cases/${c.case_id}/label`, {method: "PUT", headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({labeler: labeler(), decision: state.decision, rules, note: $("note").value, unsure: $("unsure").checked})});
+    c.decision = state.decision;
+    showProgress({...r, ref: $("ds").selectedOptions[0].textContent.split(" ·")[0], status: "draft"});
+    let next = state.idx + 1;
+    if ($("onlyTodo").checked) {
+      const j = state.cases.findIndex((x, i) => i > state.idx && !x.decision);
+      const k = state.cases.findIndex(x => !x.decision);
+      next = j >= 0 ? j : k;
+      if (next < 0) { $("msg").textContent = "全部标注完成，可以关闭页面了"; return; }
+    }
+    go(Math.min(next, state.cases.length - 1));
+  } catch (e) { $("msg").textContent = "保存失败：" + e.message; }
+}
+
+for (const b of document.querySelectorAll(".dec")) b.onclick = () => setDecision(b.dataset.d);
+$("save").onclick = save;
+$("prev").onclick = () => go(state.idx - 1);
+document.addEventListener("keydown", (e) => {
+  const typing = ["TEXTAREA", "INPUT"].includes(document.activeElement.tagName) && document.activeElement.type !== "checkbox";
+  if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) { e.preventDefault(); save(); return; }
+  if (typing) return;
+  if (e.key === "1") setDecision("approve");
+  else if (e.key === "2") setDecision("review");
+  else if (e.key === "3") setDecision("reject");
+  else if (e.key === "ArrowRight") go(state.idx + 1);
+  else if (e.key === "ArrowLeft") go(state.idx - 1);
+});
+init().catch(e => { $("msg").textContent = "加载失败：" + e.message; });
+</script>
+</body>
+</html>
