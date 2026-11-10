@@ -142,7 +142,8 @@ docker compose up -d
 |---|---|
 | `policy-dev` / `policy-test` | 合成数据，规则类条款的回归测试 |
 | `policy-challenge` | 27 条语义难例。出题人和提示词同源，偏易，只作冒烟测试 |
-| `policy-hard` | 102 条难题：理由灰区、关键词误伤、变相禁报、人数提取、提示词注入、边界值、抬头变体。人工盲标，与出题人 kappa 0.80。基线 78.4% → 修复后 91.2%，误通过 0（见 `docs/eval_log.md`） |
+| `policy-hard` | 102 条难题：理由灰区、关键词误伤、变相禁报、人数提取、提示词注入、边界值、抬头变体。人工盲标，与出题人 kappa 0.80。基线 78.4% → 修复后 91.2%，误通过 0。修复是看着这批题做的，分数偏乐观（见 `docs/eval_log.md`） |
+| `policy-hard2` | 103 条第二批难题（留出集），句子、注入写法、边界维度都和第一批不同。盲标（kappa 0.77）、冻结后只跑一次：**规则 + 大模型 78.6%（95% 区间 69.8–85.5%），误通过 1，误驳回 6；只用规则 43.7%**。这是对外报告的数字 |
 | `extract-dev` / `extract-test` | 识别评测 |
 
 ## 目录
@@ -163,7 +164,8 @@ policies/policy.yaml         结构化制度
 evalsets/                    语义难例集（入库）
 scripts/eval_policy.py       审核评测（快速版，不入库）
 src/ramp_agent/evalhub/      评测平台
-scripts/gen_policy_hard.py   难题集生成
+scripts/gen_policy_hard.py   难题集生成（第一批）
+scripts/gen_policy_hard_v2.py 难题集生成（第二批，留出集）
 docker-compose.yml           MySQL / Redis / Jaeger
 data/                        数据（不入库）
 ```

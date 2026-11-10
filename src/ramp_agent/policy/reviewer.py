@@ -97,7 +97,7 @@ class PolicyReviewer:
         # 金额一致：报销金额 vs 发票价税合计（能发现“读错但自洽”的识别错误）
         if not self._certain(c, "total"):
             add("AMT", Status.UNCERTAIN, "发票金额未能可靠识别")
-        elif abs(c.amount - c.invoice.total) > 0.01:
+        elif round(c.amount * 100) != round(c.invoice.total * 100):   # 按分比较，差 1 分也算不一致
             add("AMT", Status.VIOLATED, f"报销 {c.amount} 元与发票价税合计 {c.invoice.total} 元不一致")
         else:
             add("AMT", Status.PASS)
@@ -147,13 +147,20 @@ class PolicyReviewer:
         elif c.category in ("taxi", "train", "flight"):
             add("R3", Status.PASS)
 
-        # R4 抬头与税号
-        if not self._certain(c, "buyer_name", "buyer_tax_id"):
+        # R4 抬头与税号：两项分开判断。抬头可信且明确不符（如“个人”），不必等税号；
+        # 税号为空但识别环节没有标为可疑，说明发票上确实没有税号，也算不符。
+        name_ok = self._certain(c, "buyer_name")
+        tid_flagged = c.extraction_failed or "buyer_tax_id" in c.uncertain_fields
+        tid = (c.invoice.buyer_tax_id or "").strip()
+        bad = []
+        if name_ok and not same_name(c.invoice.buyer_name, P.company.name):
+            bad.append(f"抬头“{c.invoice.buyer_name}”与公司全称不一致")
+        if not tid_flagged and tid != P.company.tax_id:
+            bad.append(f"税号 {tid} 与公司不一致" if tid else "发票未填写购买方税号")
+        if bad:
+            add("R4", Status.VIOLATED, "；".join(bad))
+        elif not name_ok or tid_flagged:
             add("R4", Status.UNCERTAIN, "发票抬头或税号未能可靠识别，需人工核对")
-        elif (not same_name(c.invoice.buyer_name, P.company.name)
-              or c.invoice.buyer_tax_id.strip() != P.company.tax_id):
-            add("R4", Status.VIOLATED,
-                f"抬头“{c.invoice.buyer_name}”/税号 {c.invoice.buyer_tax_id} 与公司不一致")
         else:
             add("R4", Status.PASS)
 

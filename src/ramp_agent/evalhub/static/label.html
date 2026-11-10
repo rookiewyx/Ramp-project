@@ -31,6 +31,8 @@
   .kv { display: grid; grid-template-columns: 110px 1fr; gap: 4px 12px; font-size: 14px; }
   .kv dt { color: var(--muted); }
   .kv dd { margin: 0; overflow-wrap: anywhere; }
+  .mono { font-family: ui-monospace, Consolas, "Courier New", monospace; letter-spacing: .04em; }
+  .blank { color: #b45309; font-weight: 600; }
   .note { background: var(--soft); border-radius: 8px; padding: 10px 12px; margin: 12px 0; white-space: pre-wrap; }
   table { width: 100%; border-collapse: collapse; font-size: 14px; margin-top: 6px; }
   th, td { text-align: left; padding: 6px 4px; border-bottom: 1px solid var(--line); }
@@ -121,7 +123,7 @@ async function init() {
   state.policy = await api("/api/policy");
   const pol = $("policy"), box = $("rulebox");
   pol.append(el("div", {class: "rule"}, el("b", {}, "公司抬头 "), state.policy.company.name,
-    el("br"), el("b", {}, "税号 "), state.policy.company.tax_id));
+    el("br"), el("b", {}, "税号 "), el("span", {class: "mono"}, state.policy.company.tax_id)));
   for (const r of state.policy.rules) {
     pol.append(el("div", {class: "rule"}, el("b", {}, `${r.id} ${r.title}`),
       el("span", {class: "tag " + r.outcome}, r.outcome === "reject" ? "违反→驳回" : "违反→人工"), el("br"), r.clause));
@@ -184,9 +186,12 @@ function render(c) {
     card.append(el("p", {class: "warn"}, "未附发票文件"));
   }
   const ikv = el("dl", {class: "kv"});
-  const addi = (a, b) => ikv.append(el("dt", {}, a), el("dd", {}, b ?? "—"));
-  addi("发票号码", inv.invoice_no); addi("开票日期", inv.issue_date); addi("销售方", inv.seller);
-  addi("购买方", inv.buyer_name); addi("购买方税号", inv.buyer_tax_id); addi("价税合计", inv.total != null ? `${inv.total} 元` : null);
+  // 号码类字段用等宽字体，字母 O 和数字 0 才分得清；空字段明确显示“（空）”，不留白
+  const addi = (a, b, mono = false) => ikv.append(el("dt", {}, a),
+    (b === null || b === undefined || b === "") ? el("dd", {class: "blank"}, "（空）")
+                                                : el("dd", mono ? {class: "mono"} : {}, String(b)));
+  addi("发票号码", inv.invoice_no, true); addi("开票日期", inv.issue_date); addi("销售方", inv.seller);
+  addi("购买方", inv.buyer_name); addi("购买方税号", inv.buyer_tax_id, true); addi("价税合计", inv.total != null ? `${inv.total} 元` : null);
   card.append(el("h2", {style: "margin-top:16px"}, k.has_attachment ? "发票" : "发票（员工填写的信息，未附文件）"), ikv);
   const tb = el("table", {}, el("tr", {}, el("th", {}, "明细"), el("th", {class: "num"}, "金额")));
   for (const it of inv.items || []) tb.append(el("tr", {}, el("td", {}, it.name), el("td", {class: "num"}, it.amount.toFixed(2))));

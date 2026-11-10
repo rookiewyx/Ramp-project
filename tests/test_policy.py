@@ -296,3 +296,21 @@ def test_llm_judge_over_http():
     r = review(taxi("习惯打车"), judge)
     assert r.decision == Decision.REVIEW and r.prompt_tokens == 300
     assert sent[0]["messages"][0]["role"] == "system" and sent[0]["temperature"] == 0
+
+
+def test_amount_mismatch_by_one_cent():
+    """300 − 299.99 在浮点数里是 0.00999…，不能用 0.01 做容差。"""
+    r = review(claim(category="other", invoice={"items": [("办公用品", 299.99)]}, amount=300.0))
+    assert "AMT" in r.violated_rules and r.decision == Decision.REVIEW
+
+
+def test_personal_buyer_rejected_even_without_tax_id():
+    r = review(claim(invoice={"buyer_name": "个人", "buyer_tax_id": ""}))
+    assert r.decision == Decision.REJECT and "R4" in r.violated_rules
+
+
+def test_empty_tax_id_rejected_unless_flagged_by_extraction():
+    assert review(claim(invoice={"buyer_tax_id": ""})).decision == Decision.REJECT
+    flagged = claim(invoice={"buyer_tax_id": ""}, uncertain_fields=["buyer_tax_id"])
+    r = review(flagged)
+    assert r.decision == Decision.REVIEW and "R4" in r.uncertain_rules

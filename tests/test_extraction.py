@@ -210,3 +210,13 @@ def test_vlm_client_retries_once_on_bad_json(sample_scan):
     vlm, sent = make_vlm(["抱歉我看不清", '{"invoice_no": null, "total": 12}'])
     out = vlm.extract(sample_scan.read_bytes())
     assert len(sent) == 2 and out.fields.total == 12.0 and out.prompt_tokens == 1800
+
+
+def test_missing_tax_id_is_suspicious_on_cn_invoice():
+    from ramp_agent.extraction.schema import InvoiceFields
+    from ramp_agent.extraction.validate import validate
+    f = InvoiceFields(invoice_no="12345678", issue_date="2026-10-20", buyer_name="星河数智科技有限公司",
+                      buyer_tax_id="", total=88.0)
+    failed, suspicious = validate(f)
+    assert "missing:buyer_tax_id" in failed and "buyer_tax_id" in suspicious
+    assert "buyer_tax_id" not in validate(f, strict_cn=False)[1]      # 非中国票据（如 CORD 小票）不要求税号

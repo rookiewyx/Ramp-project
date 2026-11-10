@@ -52,6 +52,11 @@ def validate(fields: InvoiceFields, *, strict_cn: bool = True,
         suspicious.add("issue_date")
 
     if strict_cn:
+        # 开给公司的增值税发票一定有购买方税号。读出来是空的，多半是没读到，标为可疑；
+        # 否则审核会把“没读到”当成“发票上没有”而直接驳回。
+        if not fields.buyer_tax_id:
+            failed.append("missing:buyer_tax_id")
+            suspicious.add("buyer_tax_id")
         if fields.invoice_no and not INVOICE_NO_RE.match(fields.invoice_no):
             failed.append("format:invoice_no")
             suspicious.add("invoice_no")

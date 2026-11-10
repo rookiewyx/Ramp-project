@@ -106,6 +106,8 @@ STANDARD = [
     ("policy-test", "policy", "data/synthetic_test/expenses.jsonl", True, True, "合成独立测试集（seed 7）"),
     ("policy-challenge", "policy", "evalsets/policy_challenge.jsonl", True, True, "语义难例集（出题人与提示词同源，偏易）"),
     ("policy-hard", "policy", "evalsets/policy_hard_v1.jsonl", False, False, "难题集 v1，待人工盲标"),
+    ("policy-hard2", "policy", "evalsets/policy_hard_v2.jsonl", False, False,
+     "难题集第二批（留出集）：盲标、冻结后只跑一次，不据此修改系统"),
     ("extract-dev", "extraction", "data/synthetic/expenses.jsonl", False, True, "合成开发集的发票"),
     ("extract-test", "extraction", "data/synthetic_test/expenses.jsonl", False, True, "独立测试集的发票"),
 ]
