@@ -270,6 +270,20 @@ def cmd_export(a) -> None:
         print(f"[evalhub] 已导出 {v.ref}（{len(v.cases)} 条）到 {out}")
 
 
+def cmd_harvest(a) -> None:
+    from ..config import get_settings
+    from .harvest import harvest
+
+    source = a.source or get_settings().database_url
+    with session() as s:
+        rep_ = harvest(source, s, a.dataset, audit=a.audit, seed=a.seed, dry_run=a.dry_run)
+        s.commit()
+    print(rep_.format())
+    if rep_.added and not a.dry_run:
+        print(f"下一步：evalhub serve 盲标 {rep_.version}（抽检的单子没有财务结论，必须标），"
+              f"然后 evalhub agreement {a.dataset}")
+
+
 def cmd_serve(a) -> None:
     import uvicorn
 
@@ -350,6 +364,14 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("ref")
     p.add_argument("-o", "--output", required=True)
     p.set_defaults(func=cmd_export)
+
+    p = sub.add_parser("harvest", help="数据闭环：把线上财务复核和抽检的单子收进评测集")
+    p.add_argument("--source", help="业务库地址，默认用 .env 里的 DATABASE_URL")
+    p.add_argument("--dataset", default="policy-prod")
+    p.add_argument("--audit", type=int, default=20, help="从没人复核的自动结论里随机抽检多少条")
+    p.add_argument("--seed", type=int, default=0)
+    p.add_argument("--dry-run", action="store_true", help="只统计，不写入")
+    p.set_defaults(func=cmd_harvest)
 
     p = sub.add_parser("serve", help="启动标注页面")
     p.add_argument("--host", default="127.0.0.1")

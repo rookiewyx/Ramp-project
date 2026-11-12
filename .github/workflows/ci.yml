@@ -1,0 +1,101 @@
+# 每次推送和拉取请求都跑：代码检查 + 全部测试；服务和迁移在 MySQL、PostgreSQL 上各跑一遍；构建镜像并冒烟测试
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  UV_SYSTEM_PYTHON: "1"
+
+jobs:
+  test:
+    name: 代码检查 + 测试（SQLite）
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: {python-version: "3.11"}
+      - uses: astral-sh/setup-uv@v6
+      - name: 安装依赖
+        run: uv pip install -e ".[data,dev]"
+      - name: ruff
+        run: ruff check .
+      - name: pytest
+        run: pytest -q
+
+  databases:
+    name: 服务与迁移（${{ matrix.db }}）
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - db: MySQL 8.4
+            url: mysql+pymysql://ramp:ramp_dev_pw@127.0.0.1:3306/ramp_test?charset=utf8mb4
+          - db: PostgreSQL 16
+            url: postgresql+psycopg://postgres:postgres@127.0.0.1:5432/ramp_test
+    services:
+      mysql:
+        image: mysql:8.4
+        env:
+          MYSQL_ROOT_PASSWORD: root
+          MYSQL_DATABASE: ramp_test
+          MYSQL_USER: ramp
+          MYSQL_PASSWORD: ramp_dev_pw
+        ports: ["3306:3306"]
+        options: >-
+          --health-cmd="mysqladmin ping -h 127.0.0.1 -uroot -proot"
+          --health-interval=5s --health-timeout=5s --health-retries=20
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: ramp_test
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd="pg_isready -U postgres"
+          --health-interval=5s --health-timeout=5s --health-retries=20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: {python-version: "3.11"}
+      - uses: astral-sh/setup-uv@v6
+      - run: uv pip install -e ".[data,dev]"
+      - name: 迁移与服务测试
+        env:
+          RAMP_TEST_DATABASE_URL: ${{ matrix.url }}
+        run: pytest -q tests/test_migrations.py tests/test_service.py tests/test_harvest.py
+
+  docker:
+    name: 构建镜像并冒烟测试
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: 检查 compose 文件
+        run: docker compose --profile app config --quiet
+      - name: 构建
+        run: docker build -t ramp-agent:ci .
+      - name: 启动并检查接口
+        run: |
+          docker run -d --name ramp -p 8080:8080 -e TASK_EAGER=true ramp-agent:ci
+          for i in $(seq 1 30); do
+            if curl -fsS http://127.0.0.1:8080/healthz; then break; fi
+            sleep 1
+          done
+          curl -fsS http://127.0.0.1:8080/readyz
+          curl -fsS -o /dev/null http://127.0.0.1:8080/workbench
+          code=$(curl -s -o /dev/null -w "%{http_code}" -X POST http://127.0.0.1:8080/v1/expenses \
+            -F category=meal -F amount=88.00 -F submit_date=2026-11-02)
+          test "$code" = "202"
+      - name: 失败时打印日志
+        if: failure()
+        run: docker logs ramp || true

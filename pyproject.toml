@@ -14,8 +14,12 @@ dependencies = [
     # 存储：MySQL + Redis
     "sqlalchemy>=2.0",
     "pymysql>=1.1",
+    "cryptography>=42",       # PyMySQL 连 MySQL 8 默认的 caching_sha2_password 认证需要它
     "alembic>=1.13",
     "redis>=5.0",
+    # 任务队列与对象存储（模块三）
+    "celery>=5.4",
+    "minio>=7.2",
     # 大模型调用（OpenAI 兼容接口：Qwen / DeepSeek / AutoDL 上的 vLLM）
     "openai>=1.40",
     "httpx>=0.27",
@@ -27,6 +31,7 @@ dependencies = [
     "opentelemetry-sdk>=1.25",
     "opentelemetry-exporter-otlp>=1.25",
     "opentelemetry-instrumentation-fastapi>=0.46b0",
+    "opentelemetry-instrumentation-celery>=0.46b0",
     # 配置与日志
     "pyyaml>=6.0",
     "loguru>=0.7",
@@ -43,6 +48,7 @@ dev = [
     "pytest-asyncio>=0.23",
     "ruff>=0.5",
     "locust>=2.29",
+    "psycopg[binary]>=3.2",   # CI 里在 PostgreSQL 上跑迁移和服务测试
 ]
 
 [project.scripts]
@@ -59,6 +65,13 @@ packages = ["src/ramp_agent"]
 line-length = 100
 extend-exclude = ["data"]
 target-version = "py311"
+
+[tool.ruff.lint]
+# 默认规则 + 行尾空白 + 禁止笼统地吞掉异常（BLE）。显式写出来，CI 和本地结果一致
+select = ["E4", "E7", "E9", "F", "W", "BLE"]
+
+[tool.ruff.lint.per-file-ignores]
+"scripts/*" = ["E402"]          # 脚本要先把 src 加进 sys.path 再导入
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

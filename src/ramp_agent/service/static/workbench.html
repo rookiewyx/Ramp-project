@@ -1,0 +1,601 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>RAMP 审核工作台</title>
+<style>
+  :root {
+    --bg: #f5f4f0; --card: #ffffff; --text: #1d1c1a; --muted: #6d6b65; --line: #e4e2db; --hover: #f0eee8;
+    --accent: #2f54c9; --on-accent: #ffffff; --sel: #e9eefc;
+    --approve: #23744a; --review: #a86a0b; --reject: #b8322a; --info: #4b5563;
+    --approve-bg: #e5f3ea; --review-bg: #fbf0dc; --reject-bg: #fbe6e3;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #151517; --card: #1f1f23; --text: #ecebe6; --muted: #9e9d97; --line: #323238; --hover: #27272c;
+            --accent: #8da3ff; --on-accent: #12131a; --sel: #262c42;
+            --approve: #62c48d; --review: #e2b04f; --reject: #f07f73; --info: #a5adbb;
+            --approve-bg: #1d3327; --review-bg: #3a2f17; --reject-bg: #3d211e; }
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; }
+  body { margin: 0; background: var(--bg); color: var(--text);
+         font: 14px/1.55 -apple-system, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+         display: flex; flex-direction: column; }
+  button, input, select, textarea { font: inherit; color: inherit; }
+  .num { font-variant-numeric: tabular-nums; }
+  .mono { font-family: ui-monospace, Consolas, "Courier New", monospace; letter-spacing: .03em; }
+  .muted { color: var(--muted); }
+
+  /* 顶栏 */
+  header { display: flex; align-items: center; gap: 18px; padding: 10px 18px; background: var(--card);
+           border-bottom: 1px solid var(--line); flex-wrap: wrap; }
+  header h1 { font-size: 15px; font-weight: 650; margin: 0; white-space: nowrap; }
+  .stats { display: flex; gap: 18px; flex: 1; flex-wrap: wrap; }
+  .stat { display: flex; flex-direction: column; line-height: 1.2; }
+  .stat b { font-size: 17px; font-weight: 650; }
+  .stat span { font-size: 12px; color: var(--muted); }
+  .me { display: flex; align-items: center; gap: 8px; }
+  .me input { width: 110px; }
+  input[type=text], input[type=password], input[type=number], input[type=date], select, textarea {
+    background: var(--bg); border: 1px solid var(--line); border-radius: 6px; padding: 5px 8px; }
+  .btn { border: 1px solid var(--line); background: var(--card); border-radius: 7px; padding: 6px 12px; cursor: pointer; }
+  .btn:hover { background: var(--hover); }
+  .btn.primary { background: var(--accent); color: var(--on-accent); border-color: transparent; }
+  .btn:disabled { opacity: .45; cursor: not-allowed; }
+
+  /* 三栏 */
+  .layout { flex: 1; min-height: 0; display: grid; grid-template-columns: 330px minmax(0, 1fr) 380px; }
+  .col { min-height: 0; overflow: auto; }
+  .queue { border-right: 1px solid var(--line); background: var(--card); display: flex; flex-direction: column; overflow: hidden; }
+  .side { border-left: 1px solid var(--line); background: var(--card); display: flex; flex-direction: column; overflow: hidden; }
+
+  /* 左：待办 */
+  .tabs { display: flex; gap: 2px; padding: 8px 8px 0; flex-wrap: wrap; }
+  .tab { border: 0; background: transparent; padding: 6px 9px; border-radius: 6px; cursor: pointer; color: var(--muted); }
+  .tab.on { background: var(--sel); color: var(--text); font-weight: 600; }
+  .tab .c { font-size: 12px; margin-left: 3px; }
+  .search { padding: 8px; border-bottom: 1px solid var(--line); }
+  .search input { width: 100%; }
+  .list { flex: 1; overflow: auto; }
+  .item { display: grid; grid-template-columns: 1fr auto; gap: 2px 8px; padding: 10px 12px;
+          border-bottom: 1px solid var(--line); cursor: pointer; }
+  .item:hover { background: var(--hover); }
+  .item.on { background: var(--sel); box-shadow: inset 3px 0 0 var(--accent); }
+  .item .who { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .item .amt { text-align: right; font-weight: 600; }
+  .item .meta { font-size: 12px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .empty { padding: 40px 16px; text-align: center; color: var(--muted); }
+
+  .badge { display: inline-block; font-size: 12px; padding: 1px 7px; border-radius: 10px; white-space: nowrap; font-weight: 600; }
+  .badge.approve { background: var(--approve-bg); color: var(--approve); }
+  .badge.review { background: var(--review-bg); color: var(--review); }
+  .badge.reject { background: var(--reject-bg); color: var(--reject); }
+  .badge.pending { background: var(--hover); color: var(--info); }
+
+  /* 中：单据与发票 */
+  .main { padding: 16px 18px 24px; display: flex; flex-direction: column; gap: 14px; }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 10px; }
+  .card > h2 { font-size: 13px; font-weight: 650; margin: 0; padding: 10px 14px; border-bottom: 1px solid var(--line);
+               display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+  .card .body { padding: 12px 14px; }
+  .title { display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; }
+  .title .big { font-size: 24px; font-weight: 700; }
+  .kv { display: grid; grid-template-columns: repeat(auto-fill, minmax(170px, 1fr)); gap: 8px 16px; margin-top: 10px; }
+  .kv div span { display: block; font-size: 12px; color: var(--muted); }
+  .note { margin-top: 10px; background: var(--bg); border-radius: 8px; padding: 8px 10px; white-space: pre-wrap; overflow-wrap: anywhere; }
+  table { width: 100%; border-collapse: collapse; }
+  th, td { text-align: left; padding: 7px 8px; border-bottom: 1px solid var(--line); vertical-align: top; overflow-wrap: anywhere; }
+  td.mono { word-break: break-all; }
+  th { font-size: 12px; color: var(--muted); font-weight: 500; }
+  td.r, th.r { text-align: right; }
+  tr.bad td { background: var(--reject-bg); }
+  tr.unsure td { background: var(--review-bg); }
+  .flag { font-size: 12px; font-weight: 600; margin-left: 6px; }
+  .flag.bad { color: var(--reject); }
+  .flag.unsure { color: var(--review); }
+  .preview { height: 560px; display: flex; align-items: center; justify-content: center; background: var(--bg); border-radius: 0 0 10px 10px; overflow: auto; }
+  .preview iframe { width: 100%; height: 100%; border: 0; }
+  .preview img { max-width: 100%; max-height: 100%; object-fit: contain; }
+
+  /* 右：系统结论与复核 */
+  .side .scroll { flex: 1; overflow: auto; padding: 14px; display: flex; flex-direction: column; gap: 14px; }
+  .verdict { border-radius: 10px; padding: 12px 14px; }
+  .verdict.approve { background: var(--approve-bg); }
+  .verdict.review { background: var(--review-bg); }
+  .verdict.reject { background: var(--reject-bg); }
+  .verdict .h { font-size: 12px; color: var(--muted); }
+  .verdict .d { font-size: 18px; font-weight: 700; }
+  .verdict.approve .d { color: var(--approve); }
+  .verdict.review .d { color: var(--review); }
+  .verdict.reject .d { color: var(--reject); }
+  .sec h3 { font-size: 12px; color: var(--muted); font-weight: 600; margin: 0 0 6px; text-transform: none; }
+  .rule { border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; margin-bottom: 6px; }
+  .rule.violated { border-color: color-mix(in srgb, var(--reject) 45%, var(--line)); }
+  .rule.uncertain { border-color: color-mix(in srgb, var(--review) 45%, var(--line)); }
+  .rule .t { display: flex; justify-content: space-between; gap: 8px; font-weight: 600; }
+  .rule .reason { margin-top: 2px; }
+  .rule details { margin-top: 4px; font-size: 12px; color: var(--muted); }
+  .rule summary { cursor: pointer; }
+  .passed { font-size: 12px; color: var(--muted); }
+  .passed span { display: inline-block; margin: 2px 6px 2px 0; }
+  .facts { display: grid; grid-template-columns: auto 1fr; gap: 3px 10px; font-size: 13px; }
+  .facts dt { color: var(--muted); }
+  .facts dd { margin: 0; }
+  .timeline { list-style: none; margin: 0; padding: 0; font-size: 12.5px; }
+  .timeline li { padding: 4px 0 4px 14px; border-left: 2px solid var(--line); margin-left: 4px; position: relative; }
+  .timeline li::before { content: ""; position: absolute; left: -5px; top: 10px; width: 8px; height: 8px; border-radius: 50%; background: var(--line); }
+
+  .act { border-top: 1px solid var(--line); padding: 12px 14px; display: flex; flex-direction: column; gap: 8px; background: var(--card); }
+  .choices { display: flex; gap: 8px; }
+  .choice { flex: 1; border: 2px solid var(--line); background: transparent; border-radius: 8px; padding: 8px; cursor: pointer; font-weight: 600; }
+  .choice[data-d=approve].on { border-color: var(--approve); color: var(--approve); background: var(--approve-bg); }
+  .choice[data-d=reject].on { border-color: var(--reject); color: var(--reject); background: var(--reject-bg); }
+  kbd { font: 11px ui-monospace, monospace; border: 1px solid var(--line); border-radius: 3px; padding: 0 4px; margin-left: 4px; color: var(--muted); }
+  .act textarea { width: 100%; height: 60px; resize: vertical; }
+  .act .hint { font-size: 12px; color: var(--muted); }
+  .act .hint.warn { color: var(--reject); }
+  .done-box { font-size: 13px; }
+
+  /* 弹窗 */
+  dialog { border: 1px solid var(--line); border-radius: 12px; background: var(--card); color: var(--text); padding: 0; width: min(560px, 94vw); }
+  dialog::backdrop { background: rgb(0 0 0 / .35); }
+  dialog form { padding: 16px 18px; display: flex; flex-direction: column; gap: 10px; }
+  dialog h2 { margin: 0; font-size: 16px; }
+  .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 8px 12px; }
+  .grid2 label, dialog label { display: flex; flex-direction: column; gap: 3px; font-size: 12px; color: var(--muted); }
+  .grid2 label input, .grid2 label select { color: var(--text); }
+  .row { display: flex; justify-content: flex-end; gap: 8px; }
+  .toast { position: fixed; bottom: 18px; left: 50%; transform: translateX(-50%); background: var(--text); color: var(--bg);
+           padding: 8px 14px; border-radius: 8px; opacity: 0; transition: opacity .2s; pointer-events: none; z-index: 10; }
+  .toast.show { opacity: .92; }
+
+  @media (max-width: 1180px) {
+    .layout { grid-template-columns: 300px minmax(0, 1fr); }
+    .side { grid-column: 1 / -1; border-left: 0; border-top: 1px solid var(--line); }
+    body { height: auto; } .layout { min-height: 0; } .col { overflow: visible; }
+    .queue { max-height: 70vh; }
+  }
+  @media (max-width: 760px) {
+    .layout { grid-template-columns: minmax(0, 1fr); }
+    header { gap: 10px; } .stats { gap: 12px; } .me input { width: 90px; }
+    .queue { border-right: 0; }
+    .preview { height: 420px; }
+    table { table-layout: fixed; } th:first-child, td:first-child { width: 64px; }
+  }
+</style>
+</head>
+<body>
+<header>
+  <h1>RAMP 财务审核工作台</h1>
+  <div class="stats" id="stats"></div>
+  <div class="me">
+    <label class="muted" for="reviewer">复核人</label>
+    <input id="reviewer" type="text" placeholder="你的名字" maxlength="64">
+    <button class="btn" id="newBtn" type="button">＋ 提交报销</button>
+    <button class="btn" id="keyBtn" type="button" title="接口密钥">🔑</button>
+  </div>
+</header>
+
+<div class="layout">
+  <aside class="col queue">
+    <div class="tabs" id="tabs"></div>
+    <div class="search"><input id="search" type="text" placeholder="搜索员工、说明、编号（按 / 聚焦）"></div>
+    <div class="list" id="list"></div>
+  </aside>
+
+  <main class="col main" id="main"><div class="empty">从左侧选择一笔报销</div></main>
+
+  <aside class="col side">
+    <div class="scroll" id="side"></div>
+    <div class="act" id="act" hidden>
+      <div class="choices">
+        <button class="choice" data-d="approve" type="button">通过<kbd>A</kbd></button>
+        <button class="choice" data-d="reject" type="button">驳回<kbd>R</kbd></button>
+      </div>
+      <textarea id="note" placeholder="复核意见。推翻系统结论时必须写明理由"></textarea>
+      <div class="hint" id="hint">J / K 切换上下一笔，Ctrl+Enter 提交</div>
+      <button class="btn primary" id="submit" type="button" disabled>提交复核</button>
+    </div>
+  </aside>
+</div>
+
+<dialog id="keyDlg">
+  <form method="dialog">
+    <h2>接口密钥</h2>
+    <p class="muted" style="margin:0">服务开启了鉴权时（.env 里的 API_KEYS），在这里填写。只保存在本机浏览器里。</p>
+    <input id="keyInput" type="password" autocomplete="off" placeholder="X-API-Key">
+    <div class="row"><button class="btn" value="cancel">取消</button><button class="btn primary" id="keySave" value="ok">保存</button></div>
+  </form>
+</dialog>
+
+<dialog id="newDlg">
+  <form id="newForm" method="dialog">
+    <h2>提交一笔报销</h2>
+    <div class="grid2">
+      <label>类别<select name="category" required>
+        <option value="meal">餐饮</option><option value="hotel">住宿</option><option value="taxi">市内打车</option>
+        <option value="entertainment">业务招待</option><option value="train">火车</option><option value="flight">飞机</option>
+        <option value="conference">会议</option><option value="other">其他</option></select></label>
+      <label>金额（元）<input name="amount" type="text" required placeholder="88.00" inputmode="decimal"></label>
+      <label>员工工号<input name="employee_id" type="text" placeholder="E001"></label>
+      <label>员工姓名<input name="employee_name" type="text"></label>
+      <label>提交日期<input name="submit_date" type="date" required></label>
+      <label>出差城市<input name="city" type="text" placeholder="差旅类填写"></label>
+      <label>出差开始<input name="trip_start" type="date"></label>
+      <label>出差结束<input name="trip_end" type="date"></label>
+      <label>住宿晚数<input name="nights" type="number" min="0"></label>
+      <label>招待人数<input name="headcount" type="number" min="0"></label>
+      <label>预审批编号<input name="preapproval_id" type="text"></label>
+      <label>发票文件<input name="file" type="file" accept=".pdf,.jpg,.jpeg,.png"></label>
+    </div>
+    <label>报销说明<textarea name="note" rows="2"></textarea></label>
+    <div class="row"><button class="btn" value="cancel" formnovalidate>取消</button><button class="btn primary" id="newSubmit" value="ok">提交</button></div>
+  </form>
+</dialog>
+
+<div class="toast" id="toast"></div>
+
+<script>
+"use strict";
+const $ = (s) => document.querySelector(s);
+const CAT = { hotel: "住宿", meal: "餐饮", entertainment: "业务招待", taxi: "市内打车", train: "火车",
+              flight: "飞机", conference: "会议", other: "其他" };
+const DEC = { approve: "建议通过", review: "需人工审核", reject: "建议驳回" };
+const FINAL = { approve: "已通过", reject: "已驳回", review: "仍需审核" };
+const STATUS = { queued: "排队中", processing: "审核中", failed: "审核失败" };
+const TIER = { pdf_text: "读取 PDF 文字层（未调用模型）", vlm: "视觉模型识别", failed: "识别失败", none: "未附发票" };
+const EVENT = { submitted: "员工提交", review_started: "开始审核", reviewed: "系统审核完成", retry: "审核出错，稍后重试",
+                failed: "审核失败", overridden: "财务复核", rereview_requested: "申请重新审核" };
+const FIELD = { invoice_no: "发票号码", issue_date: "开票日期", seller: "销售方", buyer_name: "购买方",
+                buyer_tax_id: "购买方税号", total: "价税合计", items: "明细" };
+const TABS = [
+  { id: "todo", name: "待复核", q: "decision=review&pending=true" },
+  { id: "rej", name: "系统驳回", q: "decision=reject&pending=true" },
+  { id: "ok", name: "系统通过", q: "decision=approve&pending=true" },
+  { id: "doing", name: "处理中", q: "status=processing" },
+  { id: "done", name: "已复核", q: "reviewed=true" },
+  { id: "all", name: "全部", q: "" },
+];
+
+const state = { tab: "todo", items: [], counts: {}, sel: null, detail: null, policy: null, choice: null, fileUrl: null };
+const store = {
+  get(k, d = "") { try { return localStorage.getItem(k) ?? d; } catch { return d; } },
+  set(k, v) { try { localStorage.setItem(k, v); } catch { /* 隐私模式下不保存 */ } },
+};
+
+function el(tag, attrs = {}, ...kids) {
+  const n = document.createElement(tag);
+  for (const [k, v] of Object.entries(attrs)) {
+    if (v === undefined || v === null || v === false) continue;
+    if (k === "class") n.className = v;
+    else if (k.startsWith("on")) n.addEventListener(k.slice(2), v);
+    else n.setAttribute(k, v === true ? "" : v);
+  }
+  for (const k of kids.flat()) if (k !== null && k !== undefined && k !== false) n.append(k instanceof Node ? k : String(k));
+  return n;
+}
+function toast(msg) { const t = $("#toast"); t.textContent = msg; t.classList.add("show"); clearTimeout(t._h); t._h = setTimeout(() => t.classList.remove("show"), 2200); }
+const money = (v) => v === null || v === undefined || v === "" ? "—" : Number(v).toLocaleString("zh-CN", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+const when = (s) => { if (!s) return ""; const d = new Date(s.endsWith("Z") ? s : s + "Z"); return d.toLocaleString("zh-CN", { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" }); };
+function badgeFor(e) {
+  if (e.final_decision) return el("span", { class: "badge " + e.final_decision }, FINAL[e.final_decision]);
+  if (e.status !== "done") return el("span", { class: "badge pending" }, STATUS[e.status] || e.status);
+  return el("span", { class: "badge " + e.decision }, DEC[e.decision]);
+}
+
+// ---------------- 接口 ----------------
+async function api(path, opts = {}) {
+  const headers = { ...(opts.headers || {}) };
+  const key = store.get("ramp.apikey");
+  if (key) headers["X-API-Key"] = key;
+  const r = await fetch(path, { ...opts, headers });
+  if (r.status === 401) { $("#keyDlg").showModal(); throw new Error("需要接口密钥"); }
+  if (!r.ok) {
+    let msg = r.status + "";
+    try { const j = await r.json(); msg = typeof j.detail === "string" ? j.detail : JSON.stringify(j.detail); } catch {}
+    throw new Error(msg);
+  }
+  return r;
+}
+const getJSON = async (p) => (await api(p)).json();
+
+// ---------------- 顶栏指标 ----------------
+async function loadStats() {
+  try {
+    const s = await getJSON("/v1/stats");
+    const pct = (v) => v === null || v === undefined ? "—" : (v * 100).toFixed(1) + "%";
+    const done = Object.values(s.by_decision || {}).reduce((a, b) => a + b, 0);
+    $("#stats").replaceChildren(
+      el("div", { class: "stat" }, el("b", { class: "num" }, state.counts.todo ?? "—"), el("span", {}, "待复核")),
+      el("div", { class: "stat" }, el("b", { class: "num" }, done), el("span", {}, "已审核")),
+      el("div", { class: "stat" }, el("b", { class: "num" }, pct(s.auto_approve_rate)), el("span", {}, "自动通过率")),
+      el("div", { class: "stat" }, el("b", { class: "num" }, pct(s.human_review_rate)), el("span", {}, "转人工率")),
+      el("div", { class: "stat", title: "系统建议通过或驳回、财务复核后结论相同的比例" },
+         el("b", { class: "num" }, pct(s.human_agreement_rate)), el("span", {}, `人机一致率（${s.agreement_base ?? 0} 笔）`)),
+    );
+  } catch (e) { /* 401 时已弹窗 */ }
+}
+
+// ---------------- 左：列表 ----------------
+function renderTabs() {
+  $("#tabs").replaceChildren(...TABS.map(t => el("button", {
+    class: "tab" + (t.id === state.tab ? " on" : ""), type: "button",
+    onclick: () => { state.tab = t.id; store.set("ramp.tab", t.id); renderTabs(); loadList(true); },
+  }, t.name, state.counts[t.id] !== undefined ? el("span", { class: "c num" }, state.counts[t.id]) : null)));
+}
+
+async function loadCounts() {
+  for (const id of ["todo", "rej", "ok"]) {
+    try { state.counts[id] = (await getJSON(`/v1/expenses?${TABS.find(t => t.id === id).q}&limit=200`)).length; } catch { return; }
+  }
+  renderTabs();
+}
+
+async function loadList(selectFirst = false) {
+  const t = TABS.find(t => t.id === state.tab);
+  try { state.items = await getJSON(`/v1/expenses?${t.q}&limit=200`); } catch (e) { return; }
+  renderList();
+  if ((selectFirst || !state.sel) && visibleItems().length) select(visibleItems()[0].id);
+}
+
+function visibleItems() {
+  const q = $("#search").value.trim().toLowerCase();
+  if (!q) return state.items;
+  return state.items.filter(e => [e.employee_name, e.employee_id, e.note, e.id, CAT[e.category]]
+    .some(v => (v || "").toLowerCase().includes(q)));
+}
+
+function renderList() {
+  const items = visibleItems();
+  if (!items.length) { $("#list").replaceChildren(el("div", { class: "empty" }, state.tab === "todo" ? "没有待复核的报销 🎉" : "没有记录")); return; }
+  $("#list").replaceChildren(...items.map(e => el("div", {
+    class: "item" + (e.id === state.sel ? " on" : ""), "data-id": e.id, onclick: () => select(e.id),
+  },
+    el("div", { class: "who" }, e.employee_name || e.employee_id || "（未填员工）"),
+    el("div", { class: "amt num" }, "¥" + money(e.amount)),
+    el("div", { class: "meta" }, `${CAT[e.category] || e.category} · ${e.submit_date} · ${e.note || "无说明"}`),
+    el("div", {}, badgeFor(e)),
+  )));
+}
+
+// ---------------- 选中一笔 ----------------
+async function select(id) {
+  state.sel = id; state.choice = null;
+  for (const n of document.querySelectorAll(".item")) n.classList.toggle("on", n.dataset.id === id);
+  const node = document.querySelector(`.item[data-id="${id}"]`);
+  node?.scrollIntoView({ block: "nearest" });
+  try {
+    const [d, audit] = await Promise.all([getJSON(`/v1/expenses/${id}`), getJSON(`/v1/expenses/${id}/audit`)]);
+    if (state.sel !== id) return;            // 用户已经点了别的
+    state.detail = d;
+    renderMain(d); renderSide(d, audit); loadFile(d);
+  } catch (e) { toast("加载失败：" + e.message); }
+}
+
+function renderMain(d) {
+  const rv = d.review || {};
+  const inv = rv.invoice_fields || {};
+  const unsure = new Set(rv.uncertain_fields || []);
+  const co = state.policy?.company || {};
+  const c = d.claim || {};
+
+  const claimKV = [
+    ["类别", CAT[d.category] || d.category], ["员工", `${d.employee_name || ""} ${d.employee_id || ""}`.trim() || "—"],
+    ["提交日期", d.submit_date], ["报销单号", c.report_id || "—"],
+    ["出差城市", c.city || "—"], ["出差日期", c.trip_start ? `${c.trip_start} ~ ${c.trip_end || "?"}` : "—"],
+    ["住宿晚数", c.nights ?? "—"], ["招待人数", c.headcount ?? "—"], ["预审批编号", c.preapproval_id || "—"],
+  ];
+
+  // 报销单 vs 发票：把需要对照的几项并排放，不一致的标红，识别存疑的标黄
+  const rows = [];
+  if (d.has_attachment && rv.extraction_tier && rv.extraction_tier !== "none") {
+    const amtBad = inv.total !== null && inv.total !== undefined && Math.round(Number(d.amount) * 100) !== Math.round(Number(inv.total) * 100);
+    const buyerBad = inv.buyer_name && co.name && inv.buyer_name.replace(/\s+/g, "") !== co.name;
+    const taxBad = inv.buyer_tax_id !== undefined && co.tax_id && (inv.buyer_tax_id || "").trim() !== co.tax_id;
+    let dateBad = false;
+    if (inv.issue_date && c.trip_start && c.trip_end && ["hotel", "meal", "train", "flight"].includes(d.category))
+      dateBad = inv.issue_date < c.trip_start || inv.issue_date > c.trip_end;
+    const row = (label, claimV, invV, field, bad, mono = false) => {
+      const u = unsure.has(field);
+      return el("tr", { class: bad ? "bad" : u ? "unsure" : "" },
+        el("td", {}, label), el("td", { class: mono ? "mono" : "" }, claimV),
+        el("td", { class: mono ? "mono" : "" }, invV === null || invV === undefined || invV === "" ? "（空）" : invV,
+           bad ? el("span", { class: "flag bad" }, "不一致") : null, u ? el("span", { class: "flag unsure" }, "识别存疑") : null));
+    };
+    rows.push(row("金额", "¥" + money(d.amount), inv.total !== undefined ? "¥" + money(inv.total) : null, "total", amtBad));
+    rows.push(row("购买方", co.name || "公司全称", inv.buyer_name, "buyer_name", buyerBad));
+    rows.push(row("税号", co.tax_id || "", inv.buyer_tax_id, "buyer_tax_id", taxBad, true));
+    rows.push(row("日期", c.trip_start ? `出差 ${c.trip_start} ~ ${c.trip_end}` : `提交 ${d.submit_date}`, inv.issue_date, "issue_date", dateBad));
+    rows.push(row("发票号码", "", inv.invoice_no, "invoice_no", false, true));
+    rows.push(row("销售方", "", inv.seller, "seller", false));
+  }
+  const items = (inv.items || []).map(it => el("tr", {}, el("td", {}, it.name), el("td", { class: "r num" }, "¥" + money(it.amount))));
+
+  $("#main").replaceChildren(
+    el("section", { class: "card" },
+      el("div", { class: "body" },
+        el("div", { class: "title" }, el("span", { class: "big num" }, "¥" + money(d.amount)), badgeFor(d),
+           el("span", { class: "muted mono", style: "font-size:12px" }, d.id)),
+        el("div", { class: "kv" }, ...claimKV.map(([k, v]) => el("div", {}, el("span", {}, k), v))),
+        el("div", { class: "note" }, el("span", { class: "muted" }, "报销说明："), d.note || "（空）"),
+      )),
+    rows.length ? el("section", { class: "card" },
+      el("h2", {}, "报销单与发票对照", el("span", { class: "muted", style: "font-weight:400" }, TIER[rv.extraction_tier] || "")),
+      el("div", { class: "body", style: "padding:0" },
+        el("table", {}, el("thead", {}, el("tr", {}, el("th", {}, ""), el("th", {}, "报销单 / 公司"), el("th", {}, "发票上"))),
+           el("tbody", {}, ...rows)),
+        items.length ? el("table", {}, el("thead", {}, el("tr", {}, el("th", {}, "发票明细"), el("th", { class: "r" }, "金额"))),
+                          el("tbody", {}, ...items)) : null,
+      )) : null,
+    el("section", { class: "card" },
+      el("h2", {}, "发票原件", d.file_name ? el("span", { class: "muted", style: "font-weight:400" }, d.file_name) : null),
+      el("div", { class: "preview", id: "preview" },
+        d.has_attachment ? el("span", { class: "muted" }, "加载中…") : el("span", { class: "muted" }, "员工没有附发票"))),
+  );
+}
+
+async function loadFile(d) {
+  if (state.fileUrl) { URL.revokeObjectURL(state.fileUrl); state.fileUrl = null; }
+  if (!d.has_attachment) return;
+  try {
+    const blob = await (await api(`/v1/expenses/${d.id}/file`)).blob();
+    if (state.sel !== d.id) return;
+    state.fileUrl = URL.createObjectURL(blob);
+    const box = $("#preview");
+    box.replaceChildren(d.file_type === "pdf"
+      ? el("iframe", { src: state.fileUrl, title: "发票" })
+      : el("img", { src: state.fileUrl, alt: "发票" }));
+  } catch (e) { $("#preview").replaceChildren(el("span", { class: "muted" }, "发票加载失败：" + e.message)); }
+}
+
+function renderSide(d, audit) {
+  const rv = d.review;
+  const P = state.policy?.rules || {};
+  const parts = [];
+  if (!rv) {
+    parts.push(el("div", { class: "verdict" }, el("div", { class: "h" }, "系统结论"),
+      el("div", { class: "d" }, STATUS[d.status] || d.status), d.error ? el("div", { class: "muted" }, d.error) : null));
+  } else {
+    parts.push(el("div", { class: "verdict " + rv.decision },
+      el("div", { class: "h" }, "系统结论"), el("div", { class: "d" }, DEC[rv.decision])));
+    const bad = rv.results.filter(r => r.status === "violated");
+    const unsure = rv.results.filter(r => r.status === "uncertain");
+    const ok = rv.results.filter(r => r.status === "pass");
+    const ruleCard = (r) => el("div", { class: "rule " + r.status },
+      el("div", { class: "t" }, `${r.rule} ${P[r.rule]?.title || ""}`,
+         el("span", { class: "badge " + (r.status === "violated" ? (P[r.rule]?.outcome || "reject") : "review") },
+            r.status === "violated" ? "违反" : "无法确认")),
+      el("div", { class: "reason" }, r.reason, r.by === "llm" ? el("span", { class: "muted" }, "（大模型判断）") : null),
+      el("details", {}, el("summary", {}, "制度原文"), r.clause));
+    if (bad.length) parts.push(el("div", { class: "sec" }, el("h3", {}, `违反的条款（${bad.length}）`), ...bad.map(ruleCard)));
+    if (unsure.length) parts.push(el("div", { class: "sec" }, el("h3", {}, `需要人来确认（${unsure.length}）`), ...unsure.map(ruleCard)));
+    if (ok.length) parts.push(el("div", { class: "sec" }, el("h3", {}, `已通过（${ok.length}）`),
+      el("div", { class: "passed" }, ...ok.map(r => el("span", { title: r.clause }, `✓ ${r.rule} ${P[r.rule]?.title || ""}`)))));
+    parts.push(el("div", { class: "sec" }, el("h3", {}, "审核过程"), el("dl", { class: "facts" },
+      el("dt", {}, "发票识别"), el("dd", {}, TIER[rv.extraction_tier] || rv.extraction_tier),
+      el("dt", {}, "模型调用"), el("dd", {}, `视觉 ${rv.vlm_calls} 次，文本 ${rv.llm_calls} 次，${rv.tokens} tokens`),
+      el("dt", {}, "耗时"), el("dd", { class: "num" }, `${rv.latency_ms} ms`),
+      el("dt", {}, "版本"), el("dd", { class: "mono", style: "font-size:11.5px" },
+        Object.entries(rv.versions || {}).filter(([, v]) => v).map(([k, v]) => `${k} ${v}`).join(" · ") || "—"),
+    )));
+  }
+  if (d.overrides?.length) parts.push(el("div", { class: "sec" }, el("h3", {}, "财务复核"),
+    ...d.overrides.map(o => el("div", { class: "rule" }, el("div", { class: "t" }, `${o.reviewer}`, el("span", { class: "badge " + o.decision }, FINAL[o.decision])),
+      o.note ? el("div", { class: "reason" }, o.note) : null, el("div", { class: "muted", style: "font-size:12px" }, when(o.created_at))))));
+  parts.push(el("div", { class: "sec" }, el("h3", {}, "操作记录"), el("ul", { class: "timeline" },
+    ...audit.map(a => el("li", {}, el("span", { class: "muted num" }, when(a.at) + " "), EVENT[a.event] || a.event,
+      a.actor && a.actor !== "system" ? `（${a.actor}）` : "",
+      a.event === "overridden" ? ` → ${FINAL[a.detail.final] || a.detail.final}` : "",
+      a.event === "reviewed" ? ` → ${DEC[a.detail.decision] || a.detail.decision}` : "")))));
+  $("#side").replaceChildren(...parts);
+  $("#side").scrollTop = 0;
+
+  const canAct = d.status === "done";
+  $("#act").hidden = !canAct;
+  $("#note").value = "";
+  setChoice(null);
+}
+
+// ---------------- 复核 ----------------
+function setChoice(c) {
+  state.choice = c;
+  for (const b of document.querySelectorAll(".choice")) b.classList.toggle("on", b.dataset.d === c);
+  updateSubmit();
+}
+function needNote() { return state.choice && state.detail && state.choice !== state.detail.decision; }
+function updateSubmit() {
+  const hint = $("#hint");
+  const reviewer = $("#reviewer").value.trim();
+  let ok = !!state.choice && !!reviewer;
+  if (!reviewer) { hint.textContent = "先在右上角填写复核人"; hint.className = "hint warn"; }
+  else if (needNote() && !$("#note").value.trim()) { ok = false; hint.textContent = "与系统结论不同，请写明理由"; hint.className = "hint warn"; }
+  else { hint.textContent = "J / K 切换上下一笔，Ctrl+Enter 提交"; hint.className = "hint"; }
+  $("#submit").disabled = !ok;
+}
+async function submitReview() {
+  if ($("#submit").disabled || !state.detail) return;
+  const id = state.detail.id;
+  $("#submit").disabled = true;
+  try {
+    await api(`/v1/expenses/${id}/override`, { method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ reviewer: $("#reviewer").value.trim(), decision: state.choice, note: $("#note").value.trim() }) });
+    toast(`${FINAL[state.choice]}`);
+    const idx = visibleItems().findIndex(e => e.id === id);
+    await loadList();
+    loadCounts().then(loadStats);
+    const items = visibleItems();
+    const next = items.find(e => e.id === id) ? items[Math.min(idx + 1, items.length - 1)] : items[Math.min(idx, items.length - 1)];
+    if (next) select(next.id); else { state.sel = null; $("#main").replaceChildren(el("div", { class: "empty" }, "这一栏处理完了")); $("#side").replaceChildren(); $("#act").hidden = true; }
+  } catch (e) { toast("提交失败：" + e.message); updateSubmit(); }
+}
+function move(step) {
+  const items = visibleItems();
+  if (!items.length) return;
+  const i = items.findIndex(e => e.id === state.sel);
+  const n = items[Math.max(0, Math.min(items.length - 1, (i < 0 ? 0 : i + step)))];
+  if (n && n.id !== state.sel) select(n.id);
+}
+
+// ---------------- 提交报销（演示用） ----------------
+async function submitNew(ev) {
+  ev.preventDefault();
+  const f = $("#newForm");
+  const fd = new FormData(f);
+  for (const [k, v] of [...fd.entries()]) if (v === "" || (v instanceof File && !v.name)) fd.delete(k);
+  $("#newSubmit").disabled = true;
+  try {
+    const r = await (await api("/v1/expenses", { method: "POST", body: fd, headers: { "Idempotency-Key": crypto.randomUUID() } })).json();
+    $("#newDlg").close(); f.reset();
+    toast("已受理，审核中…");
+    for (let i = 0; i < 120; i++) {                 // 后台审核，轮询到出结论
+      const d = await getJSON(`/v1/expenses/${r.id}`);
+      if (d.status === "done" || d.status === "failed") break;
+      await new Promise(res => setTimeout(res, 500));
+    }
+    state.tab = "all"; renderTabs(); await loadList(); select(r.id); loadCounts().then(loadStats);
+  } catch (e) { toast("提交失败：" + e.message); }
+  finally { $("#newSubmit").disabled = false; }
+}
+
+// ---------------- 事件 ----------------
+document.addEventListener("keydown", (ev) => {
+  const typing = ["INPUT", "TEXTAREA", "SELECT"].includes(document.activeElement?.tagName);
+  if ((ev.ctrlKey || ev.metaKey) && ev.key === "Enter") { ev.preventDefault(); submitReview(); return; }
+  if (typing || document.querySelector("dialog[open]")) { if (ev.key === "Escape") document.activeElement.blur(); return; }
+  const k = ev.key.toLowerCase();
+  if (k === "j" || ev.key === "ArrowDown") { ev.preventDefault(); move(1); }
+  else if (k === "k" || ev.key === "ArrowUp") { ev.preventDefault(); move(-1); }
+  else if (k === "a" && !$("#act").hidden) setChoice("approve");
+  else if (k === "r" && !$("#act").hidden) setChoice("reject");
+  else if (ev.key === "/") { ev.preventDefault(); $("#search").focus(); }
+});
+for (const b of document.querySelectorAll(".choice")) b.addEventListener("click", () => setChoice(b.dataset.d));
+$("#note").addEventListener("input", updateSubmit);
+$("#submit").addEventListener("click", submitReview);
+$("#search").addEventListener("input", renderList);
+$("#reviewer").value = store.get("ramp.reviewer");
+$("#reviewer").addEventListener("input", () => { store.set("ramp.reviewer", $("#reviewer").value.trim()); updateSubmit(); });
+$("#reviewer").addEventListener("keydown", (ev) => { if (ev.key === "Enter") ev.target.blur(); });
+$("#keyBtn").addEventListener("click", () => { $("#keyInput").value = store.get("ramp.apikey"); $("#keyDlg").showModal(); });
+$("#keySave").addEventListener("click", () => { store.set("ramp.apikey", $("#keyInput").value.trim()); setTimeout(init, 0); });
+$("#newBtn").addEventListener("click", () => { $("#newForm").submit_date.value = new Date().toISOString().slice(0, 10); $("#newDlg").showModal(); });
+$("#newForm").addEventListener("submit", (ev) => { if (ev.submitter?.value === "ok") submitNew(ev); });
+
+async function init() {
+  state.tab = store.get("ramp.tab", "todo");
+  if (!TABS.some(t => t.id === state.tab)) state.tab = "todo";
+  renderTabs();
+  try { state.policy = await getJSON("/v1/policy"); } catch { return; }
+  await loadList(true);
+  await loadCounts(); loadStats();
+}
+// 定时刷新列表和指标；不打断正在看的那一笔
+setInterval(async () => {
+  if (document.hidden || document.querySelector("dialog[open]")) return;
+  await loadList(); await loadCounts(); loadStats();
+}, 8000);
+init();
+</script>
+</body>
+</html>

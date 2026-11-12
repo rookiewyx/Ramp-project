@@ -22,6 +22,7 @@ from .models import Claim, Decision, Review, RuleResult, Status
 from .registry import InMemoryRegistry, InvoiceRegistry
 from .semantic import SemanticJudge, SemanticRequest, SemanticResult
 
+
 class PolicyReviewer:
     def __init__(self, policy: PolicyConfig | None = None, judge: SemanticJudge | None = None,
                  registry: InvoiceRegistry | None = None):
@@ -55,7 +56,8 @@ class PolicyReviewer:
 
     # ---------------- 语义问题收集 ----------------
     def _semantic_request(self, c: Claim) -> SemanticRequest:
-        req = SemanticRequest(category=c.category, amount=c.amount, note=c.note)
+        req = SemanticRequest(category=c.category, amount=c.amount, note=c.note,
+                              pii_names=[c.employee_name] if c.employee_name else [])
         if c.has_attachment:
             for i in c.invoice.items:
                 hit = self.policy.prohibited_hit(i.name)

@@ -147,6 +147,23 @@ def fork(s: Session, ref: str, note: str = "") -> DatasetVersion:
     return v
 
 
+def open_for_append(s: Session, name: str, task: str, description: str = "") -> DatasetVersion:
+    """拿到一个可以追加用例的草稿版本：最新版本是草稿就用它；已冻结就派生新版本；评测集不存在就新建。"""
+    ds = s.scalar(select(Dataset).where(Dataset.name == name))
+    if ds is None or not ds.versions:
+        return _new_version(s, name, task, "harvest", description)
+    latest = ds.versions[-1]
+    if latest.status == "draft":
+        return latest
+    return fork(s, latest.ref, note="追加线上数据")
+
+
+def existing_keys(s: Session, name: str) -> set[str]:
+    """评测集所有版本里出现过的用例编号，用来去重。"""
+    ds = s.scalar(select(Dataset).where(Dataset.name == name))
+    return {c.key for v in (ds.versions if ds else []) for c in v.cases}
+
+
 # ---------------- 标注 ----------------
 def save_label(s: Session, case: Case, labeler: str, decision: str, rules: list[str] | None = None,
                note: str = "", unsure: bool = False) -> Label:

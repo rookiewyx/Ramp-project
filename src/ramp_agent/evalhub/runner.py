@@ -31,11 +31,13 @@ def code_hash() -> str:
 
 
 def prompt_hash() -> str:
+    from .. import pii
     from ..extraction import vlm
     from ..policy import semantic
 
+    # 脱敏会改变发给模型的文字，也算进提示词哈希
     text = (inspect.getsource(semantic.system_prompt) + inspect.getsource(semantic.build_prompt)
-            + vlm.PROMPT)
+            + inspect.getsource(semantic.masked_request) + inspect.getsource(pii) + vlm.PROMPT)
     return _sha(text.encode())
 
 

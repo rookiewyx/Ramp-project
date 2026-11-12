@@ -16,7 +16,9 @@ from openai import OpenAI
 from PIL import Image
 
 from ..config import Settings, get_settings
+from ..limits import model_slot
 from ..llm import parse_json_object
+from ..telemetry import genai_span, record_usage
 from .normalize import clean_invoice_no, clean_text, parse_amount, parse_date, parse_rate
 from .schema import InvoiceFields, LineItem
 
@@ -76,27 +78,31 @@ def to_fields(raw: dict) -> InvoiceFields:
 
 
 class OpenAICompatibleVLM:
+    max_concurrency: int = 0
     def __init__(self, settings: Settings | None = None):
         s = settings or get_settings()
         self.model = s.vlm_model
         # openai 客户端自带指数退避重试（连接错误、429、5xx）
         self.client = OpenAI(base_url=s.vlm_base_url, api_key=s.vlm_api_key or "EMPTY",
                              timeout=s.vlm_timeout_s, max_retries=s.vlm_max_retries)
+        self.max_concurrency = s.vlm_max_concurrency
 
     def _call(self, image_url: str, extra_hint: str = "") -> tuple[str, int, int]:
-        resp = self.client.chat.completions.create(
-            model=self.model,
-            temperature=0,
-            max_tokens=1024,
-            messages=[{"role": "user", "content": [
-                {"type": "image_url", "image_url": {"url": image_url}},
-                {"type": "text", "text": PROMPT + extra_hint},
-            ]}],
-        )
-        usage = resp.usage
-        return (resp.choices[0].message.content or "",
-                getattr(usage, "prompt_tokens", 0) or 0,
-                getattr(usage, "completion_tokens", 0) or 0)
+        with genai_span(self.model) as span, model_slot("vlm", self.max_concurrency):
+            resp = self.client.chat.completions.create(
+                model=self.model,
+                temperature=0,
+                max_tokens=1024,
+                messages=[{"role": "user", "content": [
+                    {"type": "image_url", "image_url": {"url": image_url}},
+                    {"type": "text", "text": PROMPT + extra_hint},
+                ]}],
+            )
+            usage = resp.usage
+            pt = getattr(usage, "prompt_tokens", 0) or 0
+            ct = getattr(usage, "completion_tokens", 0) or 0
+            record_usage(span, pt, ct)
+        return resp.choices[0].message.content or "", pt, ct
 
     def extract(self, image: bytes) -> VLMOutput:
         url = prepare_image(image)

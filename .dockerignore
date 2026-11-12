@@ -1,0 +1,17 @@
+# 不进镜像：密钥、本地环境、数据、缓存、报告
+.env
+.venv/
+.git/
+**/__pycache__/
+*.pyc
+.pytest_cache/
+.ruff_cache/
+.hf_cache/
+.uv_cache/
+.uv_python/
+data/
+reports/
+docs/
+tests/
+evalsets/
+scripts/

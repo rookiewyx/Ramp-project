@@ -18,7 +18,7 @@ from . import datasets as dsm
 from .db import Case, Dataset, DatasetVersion, session
 
 STATIC = Path(__file__).parent / "static"
-RESERVED = {"designer", "generator"}       # 这两个名字留给导入的预置标注，网页上不能用
+RESERVED = {"designer", "generator", "finance"}   # 留给导入的预置标注（出题人、生成器、线上财务复核），网页上不能用
 
 
 class LabelIn(BaseModel):

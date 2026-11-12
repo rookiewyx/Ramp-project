@@ -1,5 +1,41 @@
-# 本地开发依赖：MySQL（业务数据/审计）、Redis（队列/限流/缓存）、Jaeger（链路追踪）
-# 启动：docker compose up -d     停止：docker compose down
+# 两种用法：
+#   docker compose up -d                       只起依赖（MySQL / Redis / Jaeger），代码在本机跑
+#   docker compose --profile app up -d --build 整套跑在容器里：迁移 → API → 两组 worker
+# 停止：docker compose --profile app down
+#
+# 发票文件默认存在一个共享卷里（API 和 worker 都挂载），单机部署够用。
+# 想用 S3 兼容的对象存储：再加上 --profile s3 启动 RustFS，并设置 COMPOSE_STORAGE=s3，例如（PowerShell）：
+#   $env:COMPOSE_STORAGE="s3"; docker compose --profile app --profile s3 up -d --build
+# 说明：MinIO 官方镜像已于 2026 年 9 月从 Docker Hub 删除、quay.io 也改为需要登录，所以这里不再用 MinIO。
+
+# 应用容器的公共配置。模型密钥等从 .env 读取；下面 environment 里的值优先，指向容器内的依赖
+x-app: &app
+  build:
+    context: .
+    args:
+      # Python 包源。国内网络慢可以先设置：$env:PIP_INDEX="https://pypi.tuna.tsinghua.edu.cn/simple"
+      PIP_INDEX: ${PIP_INDEX:-https://pypi.org/simple}
+  image: ramp-agent:latest
+  profiles: ["app"]
+  env_file:
+    - path: .env
+      required: false
+  environment: &app-env
+    DATABASE_URL: mysql+pymysql://ramp:ramp_dev_pw@mysql:3306/ramp?charset=utf8mb4
+    REDIS_URL: redis://redis:6379/0
+    STORAGE_BACKEND: ${COMPOSE_STORAGE:-local}
+    STORAGE_DIR: /app/data/objects
+    S3_ENDPOINT: rustfs:9000
+    S3_ACCESS_KEY: ramp
+    S3_SECRET_KEY: ramp_dev_secret
+    AUTO_MIGRATE: "false"          # 表结构只由 migrate 容器升级，API 和 worker 只检查版本
+    OTEL_ENABLED: "true"
+    OTEL_EXPORTER: otlp
+    OTEL_EXPORTER_OTLP_ENDPOINT: http://jaeger:4318
+  volumes:
+    - invoices:/app/data/objects   # 发票文件，API 写、worker 读
+  restart: unless-stopped
+
 services:
   mysql:
     image: mysql:8.4
@@ -24,6 +60,10 @@ services:
     command: ["redis-server", "--appendonly", "yes"]
     ports: ["6379:6379"]
     volumes: ["redis_data:/data"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      retries: 10
 
   jaeger:
     image: jaegertracing/all-in-one:1.62.0
@@ -35,6 +75,57 @@ services:
       - "4317:4317"     # OTLP gRPC
       - "4318:4318"     # OTLP HTTP
 
+  # ---------------- 可选：S3 兼容对象存储（--profile s3） ----------------
+  rustfs:
+    image: rustfs/rustfs:latest
+    container_name: ramp-rustfs
+    profiles: ["s3"]
+    environment:
+      RUSTFS_ACCESS_KEY: ramp
+      RUSTFS_SECRET_KEY: ramp_dev_secret
+      RUSTFS_CONSOLE_ENABLE: "true"
+    ports:
+      - "9000:9000"     # S3 接口
+      - "9001:9001"     # Web 控制台
+    volumes: ["rustfs_data:/data"]
+
+  # ---------------- 应用（--profile app） ----------------
+  migrate:                       # 升级表结构，执行完就退出
+    <<: *app
+    command: ["python", "-m", "ramp_agent.service", "initdb"]
+    restart: "no"
+    healthcheck: {disable: true}
+    depends_on:
+      mysql: {condition: service_healthy}
+
+  api:
+    <<: *app
+    ports: ["8080:8080"]
+    depends_on:
+      migrate: {condition: service_completed_successfully}
+      redis: {condition: service_healthy}
+
+  worker:                        # 文字版 PDF、无附件：毫秒级，并发可以开大
+    <<: *app
+    command: ["python", "-m", "ramp_agent.service", "worker", "--queues", "default", "--concurrency", "16"]
+    healthcheck: {disable: true}
+    depends_on:
+      migrate: {condition: service_completed_successfully}
+      redis: {condition: service_healthy}
+
+  worker-vlm:                    # 拍照件：并发按视觉模型配额设置，和上面的 worker 互不拖累
+    <<: *app
+    command: ["python", "-m", "ramp_agent.service", "worker", "--queues", "vlm", "--concurrency", "8"]
+    environment:
+      <<: *app-env
+      VLM_MAX_CONCURRENCY: "8"
+    healthcheck: {disable: true}
+    depends_on:
+      migrate: {condition: service_completed_successfully}
+      redis: {condition: service_healthy}
+
 volumes:
   mysql_data:
   redis_data:
+  rustfs_data:
+  invoices:

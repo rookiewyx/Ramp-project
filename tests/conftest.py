@@ -40,3 +40,29 @@ def sample_scan(tmp_path, sample_pdf):
     path = tmp_path / "inv.jpg"
     render_scan(sample_pdf, path, random.Random(0))
     return path
+
+
+@pytest.fixture
+def db_url(tmp_path):
+    """业务库地址。默认是临时 SQLite；设置了 RAMP_TEST_DATABASE_URL（CI 里的 MySQL / PostgreSQL）就用它，
+    用前用后清空所有表，保证每个测试从空库开始。"""
+    import os
+
+    url = os.environ.get("RAMP_TEST_DATABASE_URL")
+    if not url:
+        yield f"sqlite:///{(tmp_path / 't.db').as_posix()}"
+        return
+    _drop_all(url)
+    yield url
+    _drop_all(url)
+
+
+def _drop_all(url: str) -> None:
+    from sqlalchemy import MetaData
+
+    from ramp_agent.service.db import get_engine
+
+    engine = get_engine(url)
+    meta = MetaData()
+    meta.reflect(engine)
+    meta.drop_all(engine)            # 按外键依赖倒序删，连 alembic_version 一起

@@ -15,6 +15,7 @@ class Claim(BaseModel):
     expense_id: str
     report_id: str = ""
     employee_id: str = ""
+    employee_name: str = ""             # 只用于脱敏：发给大模型前从说明里隐去
     category: str                       # hotel / meal / entertainment / taxi / train / flight / conference / other
     amount: float                       # 员工填写的报销金额
     submit_date: str
