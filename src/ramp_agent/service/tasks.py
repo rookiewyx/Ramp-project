@@ -17,14 +17,15 @@ from __future__ import annotations
 
 from datetime import timedelta
 from functools import lru_cache
+from pathlib import Path
 
 from celery import Celery
 from celery.signals import worker_process_init, worker_process_shutdown
 from loguru import logger
-from sqlalchemy import or_, select
+from sqlalchemy import or_, select, update
 
 from ..config import get_settings
-from .db import Expense, ExpenseStatus, session, utcnow
+from .db import AgentStatus, Expense, ExpenseStatus, Investigation, session, utcnow
 from .pipeline import Deps, process, release
 
 settings = get_settings()
@@ -64,6 +65,8 @@ def _shutdown_process(**_) -> None:
 @lru_cache
 def deps() -> Deps:
     """每个 worker 进程组装一次依赖（模型客户端、存储、登记表）。"""
+    from ..agent import FixtureSystems, Investigator
+    from ..config import ROOT
     from ..evalhub.runner import code_hash, policy_hash, prompt_hash
     from ..extraction import InvoiceExtractor, OpenAICompatibleVLM
     from ..policy import LLMJudge
@@ -76,10 +79,17 @@ def deps() -> Deps:
     judge = LLMJudge() if s.llm_api_key else None
     if judge is None:
         logger.warning("未配置 LLM_API_KEY：需要语义判断的条款会转人工")
+    investigator = Investigator.from_settings(s) if (s.llm_api_key and s.agent_enabled) else None
+    fixture = s.enterprise_fixture
+    if fixture and not Path(fixture).is_absolute():
+        fixture = str(ROOT / fixture)
+    systems = FixtureSystems.from_file(fixture)
     versions = {"code": code_hash()[:12], "prompt": prompt_hash()[:12], "policy": policy_hash()[:12],
-                "llm": judge.model if judge else None, "vlm": vlm.model if vlm else None}
+                "llm": judge.model if judge else None, "vlm": vlm.model if vlm else None,
+                "agent": investigator.model if investigator else None}
     return Deps(settings=s, store=make_store(s), registry=registry,
-                extractor=InvoiceExtractor(vlm), judge=judge, versions=versions)
+                extractor=InvoiceExtractor(vlm), judge=judge, versions=versions,
+                investigator=investigator, systems=systems)
 
 
 @app.task(bind=True, name="ramp.review_expense", max_retries=settings.task_max_retries,
@@ -115,6 +125,25 @@ def enqueue(expense_id: str, file_key: str | None = None) -> bool:
     except Exception as exc:  # noqa: BLE001
         logger.error("投递任务失败 {}：{}", expense_id, exc)
         return False
+
+
+def expire_waiting(timeout_h: int | None = None) -> int:
+    """追问员工后超过 AGENT_REPLY_TIMEOUT_H 没有答复的：不再等，按没有答复收尾（仍转人工）。"""
+    s = get_settings()
+    cutoff = utcnow() - timedelta(hours=s.agent_reply_timeout_h if timeout_h is None else timeout_h)
+    with session(s.database_url) as db:
+        ids = db.scalars(select(Investigation.expense_id).where(
+            Investigation.status == "awaiting_employee", Investigation.asked_at < cutoff)).all()
+        moved = []
+        for i in ids:
+            res = db.execute(update(Expense).where(
+                Expense.id == i, Expense.agent_status == AgentStatus.AWAITING, Expense.final_decision.is_(None))
+                .values(status=ExpenseStatus.QUEUED, agent_status=AgentStatus.EXPIRED, updated_at=utcnow()))
+            if res.rowcount:
+                moved.append(i)
+    for i in moved:
+        enqueue(i)
+    return len(moved)
 
 
 def requeue(older_than_s: int = 60) -> int:

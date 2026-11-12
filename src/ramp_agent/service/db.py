@@ -70,6 +70,16 @@ class ExpenseStatus:
     FAILED = "failed"           # 重试用尽仍失败，需要运维介入
 
 
+class AgentStatus:
+    """调查 Agent 的进度（Expense.agent_status）。没调查过为空。"""
+    AWAITING = "awaiting_employee"   # 已向员工追问，等答复；这期间结论仍是转人工，财务也可以直接复核
+    REPLIED = "replied"              # 员工已答复，排队继续调查
+    EXPIRED = "expired"              # 等答复超时，排队收尾（按没有答复处理）
+    RESOLVED = "resolved"            # 调查后有了定论（通过 / 驳回）
+    UNRESOLVED = "unresolved"        # 调查后仍需人工
+    ERROR = "error"                  # 调查出错，保持初审结论
+
+
 class Expense(Base):
     __tablename__ = "expenses"
 
@@ -99,6 +109,7 @@ class Expense(Base):
     status: Mapped[str] = mapped_column(String(16), default=ExpenseStatus.QUEUED)
     decision: Mapped[str | None] = mapped_column(String(16))         # 系统结论
     final_decision: Mapped[str | None] = mapped_column(String(16))   # 财务复核后的最终结论
+    agent_status: Mapped[str | None] = mapped_column(String(24))     # 调查 Agent 的进度，见 AgentStatus
     attempts: Mapped[int] = mapped_column(Integer, default=0)
     error: Mapped[str | None] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(Timestamp, default=utcnow)
@@ -108,6 +119,8 @@ class Expense(Base):
         back_populates="expense", order_by="ReviewRecord.created_at", cascade="all, delete-orphan")
     overrides: Mapped[list[Override]] = relationship(
         back_populates="expense", order_by="Override.created_at", cascade="all, delete-orphan")
+    investigations: Mapped[list[Investigation]] = relationship(
+        back_populates="expense", order_by="Investigation.id", cascade="all, delete-orphan")
 
     __table_args__ = (Index("ix_expenses_status_decision", "status", "decision"),)
 
@@ -146,6 +159,35 @@ class Override(Base):
     created_at: Mapped[datetime] = mapped_column(Timestamp, default=utcnow)
 
     expense: Mapped[Expense] = relationship(back_populates="overrides")
+
+
+class Investigation(Base):
+    """调查 Agent 的一次调查：查了什么、找到什么、问了员工什么，以及调查前后的结论。
+
+    追问员工时调查会暂停：state 里存着对话和查到的记录，员工答复后从这里继续，不重复已做过的查询。
+    """
+
+    __tablename__ = "investigations"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    expense_id: Mapped[str] = mapped_column(ForeignKey("expenses.id"), index=True)
+    status: Mapped[str] = mapped_column(String(24))
+    decision_before: Mapped[str] = mapped_column(String(16))
+    decision_after: Mapped[str | None] = mapped_column(String(16))
+    question: Mapped[str | None] = mapped_column(Text)
+    reply: Mapped[str | None] = mapped_column(Text)
+    asked_at: Mapped[datetime | None] = mapped_column(Timestamp)
+    replied_at: Mapped[datetime | None] = mapped_column(Timestamp)
+    result: Mapped[dict] = mapped_column(JSON)          # 调查过程和证据（InvestigationResult.to_dict）
+    state: Mapped[dict | None] = mapped_column(JSON)    # 暂停时的断点；调查结束后清空
+    llm_calls: Mapped[int] = mapped_column(Integer, default=0)
+    tool_calls: Mapped[int] = mapped_column(Integer, default=0)
+    tokens: Mapped[int] = mapped_column(Integer, default=0)
+    latency_ms: Mapped[int] = mapped_column(Integer, default=0)
+    created_at: Mapped[datetime] = mapped_column(Timestamp, default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(Timestamp, default=utcnow, onupdate=utcnow)
+
+    expense: Mapped[Expense] = relationship(back_populates="investigations")
 
 
 class AuditEvent(Base):

@@ -58,6 +58,20 @@ def connect_llm():
     return j if _probe(j.client, "大模型") else None
 
 
+def connect_agent(kind: str | None):
+    """调查 Agent：llm 用 .env 里的文本模型；scripted 是写死流程的对照组，不调模型。"""
+    from ..agent import Investigator, ScriptedPlanner
+
+    if not kind:
+        return None
+    if kind == "scripted":
+        return Investigator(ScriptedPlanner(), "scripted")
+    a = Investigator.from_settings()
+    if not _probe(a.client, "大模型（调查 Agent）"):
+        sys.exit("[evalhub] --agent llm 需要可用的大模型")
+    return a
+
+
 def connect_vlm():
     from ..extraction import OpenAICompatibleVLM
 
@@ -108,6 +122,10 @@ STANDARD = [
     ("policy-hard", "policy", "evalsets/policy_hard_v1.jsonl", False, False, "难题集 v1，待人工盲标"),
     ("policy-hard2", "policy", "evalsets/policy_hard_v2.jsonl", False, False,
      "难题集第二批（留出集）：盲标、冻结后只跑一次，不据此修改系统"),
+    ("investigate-dev", "policy", "evalsets/investigate_dev.jsonl", True, True,
+     "调查开发集：带公司系统数据和员工答复，出题人标注，调试调查 Agent 用"),
+    ("investigate", "policy", "evalsets/investigate_v1.jsonl", False, False,
+     "调查留出集：盲标、冻结后只跑一次"),
     ("extract-dev", "extraction", "data/synthetic/expenses.jsonl", False, True, "合成开发集的发票"),
     ("extract-test", "extraction", "data/synthetic_test/expenses.jsonl", False, True, "独立测试集的发票"),
 ]
@@ -177,7 +195,7 @@ def cmd_run(a) -> None:
             run = run_policy_eval(s, v, judge=judge, note=a.note, gold=a.gold,
                                   extraction_run=a.extraction_run,
                                   extraction_report=_path(a.extraction_report) if a.extraction_report else None,
-                                  workers=a.workers)
+                                  workers=a.workers, agent=connect_agent(a.agent))
         else:
             vlm = None if a.no_vlm else connect_vlm()
             if a.force_vlm and vlm is None:
@@ -202,9 +220,12 @@ def _show(run: Run, limit: int = 15) -> None:
               f"{m['unscored']} 条未标注/有争议/拿不准）")
         print(f"误通过 {m['false_approve']}  误驳回 {m['false_reject']}  多转人工 {m['extra_review']}  "
               f"大模型调用 {m['llm_calls']} 次  tokens {m['tokens']}")
-        print("\n| 分组 | 条数 | 准确率 |\n|---|---|---|")
-        for k, g in m["groups"].items():
-            print(f"| {k} | {g['n']} | {g['accuracy']:.0%} |")
+        if "agent" in m:
+            _show_agent(m["agent"])
+        else:
+            print("\n| 分组 | 条数 | 准确率 |\n|---|---|---|")
+            for k, g in m["groups"].items():
+                print(f"| {k} | {g['n']} | {g['accuracy']:.0%} |")
     else:
         lo, hi = m["doc_accuracy_ci95"] or (0, 0)
         print(f"整张全对 {m['doc_accuracy']}（95% 区间 {lo:.1%}–{hi:.1%}）  静默错误 {m['silent_errors']}  "
@@ -216,7 +237,29 @@ def _show(run: Run, limit: int = 15) -> None:
             tag = r.case.tags.get("family") or r.case.tags.get("scenario") or r.case.tags.get("kind", "")
             extra = (f"违规 {r.output.get('violated')} 不确定 {r.output.get('uncertain')}" if run.task == "policy"
                      else f"读错 {r.output.get('wrong_fields')}")
+            ag = r.output.get("agent")
+            if ag:
+                extra += f"；初审 {r.output.get('decision_before')}，调查 {ag['status']}" + (
+                    f"（{ag['skip_reason']}）" if ag["status"] == "skipped" else
+                    f"，工具 {[x['tool'] for x in ag['steps']]}")
             print(f"  {r.case.key} [{tag}] 标准答案 {r.gold}，系统 {r.predicted}；{extra}")
+
+
+def _show_agent(g: dict) -> None:
+    pi = g["per_investigation"]
+    print(f"\n调查 Agent：调查 {g['investigated']} 条，跳过 {g['skipped']} 条，状态 {g['status']}")
+    print(f"准确率 {g['accuracy_before']:.1%} → {g['accuracy_after']:.1%}   "
+          f"转人工率 {g['review_rate_before']:.1%} → {g['review_rate_after']:.1%}   "
+          f"误通过 {g['false_approve_before']} → {g['false_approve_after']}   "
+          f"误驳回 {g['false_reject_before']} → {g['false_reject_after']}")
+    print(f"改对 {g['fixed']} 条，改错 {g['broken']} 条；追问员工 {g['asked_employee']} 次；"
+          f"证据采纳 {g['findings_accepted']}、拒绝 {g['findings_rejected']}；出错 {g['errors']}")
+    if pi["tool_calls"] is not None:
+        print(f"每次调查平均：工具 {pi['tool_calls']} 次，模型 {pi['llm_calls']} 次，tokens {pi['tokens']}，"
+              f"耗时 {pi['latency_ms']} ms")
+    print("\n| 分组 | 条数 | 调查前 | 调查后 |\n|---|---|---|---|")
+    for k, x in g["groups"].items():
+        print(f"| {k} | {x['n']} | {x['before']:.0%} | {x['after']:.0%} |")
 
 
 def cmd_show(a) -> None:
@@ -339,6 +382,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--extraction-run", type=int, help="端到端：用这次识别运行的结果作为发票字段")
     p.add_argument("--extraction-report", help="端到端：用旧的识别评测报告 .jsonl 作为发票字段")
     p.add_argument("--workers", type=int, default=4)
+    p.add_argument("--agent", choices=["llm", "scripted"],
+                   help="初审之后再做调查：llm 调查 Agent；scripted 写死流程的对照组")
     p.add_argument("--limit", type=int, default=15)
     p.set_defaults(func=cmd_run)
 

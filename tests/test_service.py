@@ -59,20 +59,6 @@ def svc(tmp_path, db_url):
     return client, deps, state
 
 
-@pytest.fixture
-def make_pdf(tmp_path):
-    from gen_synthetic import COMPANY, COMPANY_TAX_ID, Invoice, render_pdf
-
-    def _make(invoice_no="89000000000000000001", items=(("餐饮服务", 88.0),), issue="2026-10-28"):
-        inv = Invoice(invoice_no=invoice_no, issue_date=issue, seller="样例商户", buyer_name=COMPANY,
-                      buyer_tax_id=COMPANY_TAX_ID, items=[{"name": n, "amount": a} for n, a in items],
-                      total=round(sum(a for _, a in items), 2), tax_rate=0.06)
-        path = tmp_path / f"{invoice_no}.pdf"
-        render_pdf(inv, path)
-        return path.read_bytes()
-    return _make
-
-
 def form(**kw):
     base = {"category": "meal", "amount": "88.00", "submit_date": "2026-11-02", "employee_id": "E001",
             "employee_name": "张三", "city": "武汉", "trip_start": "2026-10-26", "trip_end": "2026-10-30",

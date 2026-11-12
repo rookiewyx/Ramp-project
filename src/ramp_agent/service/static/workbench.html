@@ -136,6 +136,18 @@
   .act .hint { font-size: 12px; color: var(--muted); }
   .act .hint.warn { color: var(--reject); }
   .done-box { font-size: 13px; }
+  /* 调查 Agent */
+  .agent { border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; display: flex; flex-direction: column; gap: 8px; }
+  .agent .flow { font-weight: 600; }
+  .agent .qa { background: var(--bg); border-radius: 8px; padding: 6px 9px; font-size: 13px; white-space: pre-wrap; overflow-wrap: anywhere; }
+  .agent .qa b { font-weight: 600; color: var(--muted); margin-right: 4px; }
+  .agent ol { margin: 0; padding-left: 18px; font-size: 12.5px; }
+  .agent ol li { margin: 2px 0; overflow-wrap: anywhere; }
+  .agent .ev { font-size: 12.5px; }
+  .agent .ev .ok { color: var(--approve); font-weight: 600; }
+  .agent .ev .no { color: var(--reject); font-weight: 600; }
+  .agent .reply { display: flex; gap: 6px; }
+  .agent .reply input { flex: 1; min-width: 0; }
 
   /* 弹窗 */
   dialog { border: 1px solid var(--line); border-radius: 12px; background: var(--card); color: var(--text); padding: 0; width: min(560px, 94vw); }
@@ -246,13 +258,22 @@ const FINAL = { approve: "已通过", reject: "已驳回", review: "仍需审核
 const STATUS = { queued: "排队中", processing: "审核中", failed: "审核失败" };
 const TIER = { pdf_text: "读取 PDF 文字层（未调用模型）", vlm: "视觉模型识别", failed: "识别失败", none: "未附发票" };
 const EVENT = { submitted: "员工提交", review_started: "开始审核", reviewed: "系统审核完成", retry: "审核出错，稍后重试",
-                failed: "审核失败", overridden: "财务复核", rereview_requested: "申请重新审核" };
+                failed: "审核失败", overridden: "财务复核", rereview_requested: "申请重新审核",
+                investigated: "Agent 调查完成", employee_asked: "Agent 向员工追问", employee_replied: "员工答复",
+                investigation_abandoned: "调查中止" };
+const AGENT = { awaiting_employee: "已向员工追问，等待答复", replied: "员工已答复，继续调查中", expired: "等待超时，收尾中",
+                resolved: "调查后有了结论", unresolved: "调查后仍需人工", error: "调查出错，保持初审结论" };
+const TOOL = { search_preapprovals: "查预审批", search_travel_requests: "查出差申请", verify_invoice: "发票查验",
+               lookup_merchant: "查商户登记", ask_employee: "追问员工" };
+const EVIDENCE = { preapproval: "预审批", travel_request: "出差申请", invoice: "发票查验", merchant: "商户登记",
+                   employee_reply: "员工答复" };
 const FIELD = { invoice_no: "发票号码", issue_date: "开票日期", seller: "销售方", buyer_name: "购买方",
                 buyer_tax_id: "购买方税号", total: "价税合计", items: "明细" };
 const TABS = [
   { id: "todo", name: "待复核", q: "decision=review&pending=true" },
   { id: "rej", name: "系统驳回", q: "decision=reject&pending=true" },
   { id: "ok", name: "系统通过", q: "decision=approve&pending=true" },
+  { id: "wait", name: "等员工答复", q: "agent_status=awaiting_employee&pending=true" },
   { id: "doing", name: "处理中", q: "status=processing" },
   { id: "done", name: "已复核", q: "reviewed=true" },
   { id: "all", name: "全部", q: "" },
@@ -281,6 +302,7 @@ const when = (s) => { if (!s) return ""; const d = new Date(s.endsWith("Z") ? s 
 function badgeFor(e) {
   if (e.final_decision) return el("span", { class: "badge " + e.final_decision }, FINAL[e.final_decision]);
   if (e.status !== "done") return el("span", { class: "badge pending" }, STATUS[e.status] || e.status);
+  if (e.agent_status === "awaiting_employee") return el("span", { class: "badge pending" }, "等员工答复");
   return el("span", { class: "badge " + e.decision }, DEC[e.decision]);
 }
 
@@ -326,7 +348,7 @@ function renderTabs() {
 }
 
 async function loadCounts() {
-  for (const id of ["todo", "rej", "ok"]) {
+  for (const id of ["todo", "wait", "rej", "ok"]) {
     try { state.counts[id] = (await getJSON(`/v1/expenses?${TABS.find(t => t.id === id).q}&limit=200`)).length; } catch { return; }
   }
   renderTabs();
@@ -459,6 +481,7 @@ function renderSide(d, audit) {
   } else {
     parts.push(el("div", { class: "verdict " + rv.decision },
       el("div", { class: "h" }, "系统结论"), el("div", { class: "d" }, DEC[rv.decision])));
+    if (d.investigation) parts.push(renderAgent(d));
     const bad = rv.results.filter(r => r.status === "violated");
     const unsure = rv.results.filter(r => r.status === "uncertain");
     const ok = rv.results.filter(r => r.status === "pass");
@@ -495,6 +518,50 @@ function renderSide(d, audit) {
   $("#act").hidden = !canAct;
   $("#note").value = "";
   setChoice(null);
+}
+
+// ---------------- 调查 Agent ----------------
+function renderAgent(d) {
+  const iv = d.investigation;
+  const after = iv.decision_after;
+  const box = el("div", { class: "agent" },
+    el("div", { class: "flow" }, "调查 Agent · ", AGENT[iv.status] || iv.status,
+       after ? el("span", { class: "muted", style: "font-weight:400" }, `（${DEC[iv.decision_before]} → ${DEC[after]}）`) : null));
+  if (iv.summary) box.append(el("div", {}, iv.summary,
+    el("span", { class: "muted", style: "font-size:12px" }, "（Agent 撰写，结论以审核规则为准）")));
+  if (iv.question) box.append(el("div", { class: "qa" }, el("b", {}, "追问"), iv.question));
+  if (iv.reply) box.append(el("div", { class: "qa" }, el("b", {}, "答复"), iv.reply));
+  if (iv.steps.length) box.append(el("ol", {}, ...iv.steps.map(s => el("li", {},
+    el("b", {}, TOOL[s.tool] || s.tool), s.tool === "verify_invoice" ? el("span", { class: "mono muted" }, ` ${s.args.invoice_no || ""}`) : null,
+    "：", s.result))));
+  const ev = iv.findings.filter(f => f.kind !== "employee_reply" || !f.accepted);
+  if (ev.length) box.append(el("div", { class: "ev" }, ...ev.map(f => el("div", {},
+    el("span", { class: f.accepted ? "ok" : "no" }, f.accepted ? "✓ 采纳 " : "✗ 不采纳 "),
+    `${EVIDENCE[f.kind] || f.kind} ${f.ref || ""}：${f.reason}`))));
+  if (iv.error) box.append(el("div", { class: "muted" }, iv.error));
+  box.append(el("div", { class: "muted", style: "font-size:12px" },
+    `模型 ${iv.llm_calls} 次 · 工具 ${iv.tool_calls} 次 · ${iv.tokens} tokens · ${iv.latency_ms} ms`));
+  if (d.agent_status === "awaiting_employee" && !d.final_decision) {
+    // 演示用：员工端没有页面，在这里代员工答复。生产上员工在自己的报销页面答复（同一个接口）
+    const input = el("input", { type: "text", placeholder: "（演示）代员工答复", maxlength: "1000" });
+    const send = async () => {
+      if (!input.value.trim()) return;
+      try {
+        await api(`/v1/expenses/${d.id}/reply`, { method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ reply: input.value.trim(), employee_id: d.employee_id }) });
+        toast("已答复，继续调查…");
+        for (let i = 0; i < 60; i++) {
+          const x = await getJSON(`/v1/expenses/${d.id}`);
+          if (x.status === "done") break;
+          await new Promise(r => setTimeout(r, 500));
+        }
+        await loadList(); select(d.id); loadCounts().then(loadStats);
+      } catch (e) { toast("答复失败：" + e.message); }
+    };
+    input.addEventListener("keydown", (ev) => { if (ev.key === "Enter") send(); });
+    box.append(el("div", { class: "reply" }, input, el("button", { class: "btn", type: "button", onclick: send }, "发送")));
+  }
+  return box;
 }
 
 // ---------------- 复核 ----------------

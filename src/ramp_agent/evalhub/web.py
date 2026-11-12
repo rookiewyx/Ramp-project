@@ -55,7 +55,26 @@ def _view(payload: dict) -> dict:
         "has_attachment": inv.get("file") is not None,
         "invoice": {k: inv.get(k) for k in ("invoice_no", "issue_date", "seller", "buyer_name",
                                             "buyer_tax_id", "items", "total")},
+        **_investigation_view(payload),
     }
+
+
+def _investigation_view(payload: dict) -> dict:
+    """调查评测集：识别可疑的字段、公司系统里的记录、员工被追问时的答复。员工编号换成“本人 / 其他员工”。"""
+    if "world" not in payload:
+        return {}
+    me = payload.get("employee_id")
+    w = payload.get("world") or {}
+
+    def who(r: dict) -> dict:
+        return {**{k: v for k, v in r.items() if k != "employee_id"},
+                "owner": "本人" if r.get("employee_id", me) == me else "其他员工"}
+
+    return {"uncertain_fields": payload.get("uncertain_fields") or [],
+            "world": {"travel_requests": [who(r) for r in w.get("travel_requests", [])],
+                      "preapprovals": [who(r) for r in w.get("preapprovals", [])],
+                      "invoices": w.get("invoices", []), "merchants": w.get("merchants", [])},
+            "employee_reply": payload.get("employee_reply")}
 
 
 def create_app(db_url: str | None = None) -> FastAPI:

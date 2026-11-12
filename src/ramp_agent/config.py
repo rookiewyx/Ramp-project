@@ -69,6 +69,14 @@ class Settings(BaseSettings):
     otel_service_name: str = "ramp-agent"
     otel_file: str = "reports/traces.jsonl"
 
+    # ---------------- 调查 Agent（转人工的单子先补证据再重审，见 agent/） ----------------
+    agent_enabled: bool = True
+    agent_max_steps: int = 8               # 模型最多几轮（每轮可以调用多个工具）
+    # 公司系统（出差申请、预审批、发票查验、商户登记）的数据。真实部署换成对接 OA / 税务查验的接口；
+    # 这里用 JSON 文件模拟，留空表示没有对接，Agent 只能追问员工
+    enterprise_fixture: str = ""
+    agent_reply_timeout_h: int = 72        # 追问员工后多久没答复就不再等，交给财务
+
     # 公司主体信息（用于校验发票抬头，与 policies/expense_policy.md 一致）
     company_name: str = "星河数智科技有限公司"
     company_tax_id: str = "91310000MA1XHSZ00X"

@@ -5,6 +5,7 @@
   GET  /v1/expenses                    列表；财务待办：?decision=review&pending=true
   POST /v1/expenses/{id}/override      财务复核：给出最终结论（推翻系统结论时必须写理由）
   POST /v1/expenses/{id}/rereview      重新审核（制度更新后、失败的单子）
+  POST /v1/expenses/{id}/reply         员工答复调查 Agent 的追问，答复后继续调查
   GET  /v1/expenses/{id}/audit         审计日志
   GET  /v1/expenses/{id}/file          发票原件（工作台预览用）
   GET  /v1/stats                       自动通过率、转人工率、人机一致率
@@ -44,7 +45,17 @@ from sqlalchemy import func, select, text, update
 from sqlalchemy.exc import IntegrityError
 
 from ..config import Settings, get_settings
-from .db import AuditEvent, Expense, ExpenseStatus, Override, audit, session, utcnow
+from .db import (
+    AgentStatus,
+    AuditEvent,
+    Expense,
+    ExpenseStatus,
+    Investigation,
+    Override,
+    audit,
+    session,
+    utcnow,
+)
 from .migrate import ensure_schema
 from .storage import CONTENT_TYPES, ObjectStore, make_store, object_key, sniff
 
@@ -88,6 +99,31 @@ class OverrideOut(BaseModel):
     created_at: datetime
 
 
+class InvestigationOut(BaseModel):
+    status: str
+    decision_before: str
+    decision_after: str | None
+    question: str | None
+    reply: str | None
+    asked_at: datetime | None
+    replied_at: datetime | None
+    summary: str = ""
+    steps: list[dict] = Field(default_factory=list)       # 调用了哪些工具、参数、结果摘要
+    findings: list[dict] = Field(default_factory=list)    # 提交的证据：采纳 / 拒绝及原因
+    open_items: list[dict] = Field(default_factory=list)  # 初审时待查的问题
+    initial_results: list[dict] = Field(default_factory=list)
+    llm_calls: int
+    tool_calls: int
+    tokens: int
+    latency_ms: int
+    error: str = ""
+
+
+class ReplyIn(BaseModel):
+    reply: str = Field(min_length=1, max_length=1000, description="对追问的答复")
+    employee_id: str = Field(default="", max_length=64, description="答复人工号，须与提交人一致")
+
+
 class ExpenseOut(BaseModel):
     id: str
     status: str
@@ -103,11 +139,13 @@ class ExpenseOut(BaseModel):
     file_name: str | None = None
     file_type: str | None = None
     claim: dict = Field(default_factory=dict)              # 报销单上的其他字段（城市、出差日期、人数……）
+    agent_status: str | None = None
     attempts: int
     error: str | None
     created_at: datetime
     updated_at: datetime
     review: ReviewOut | None = None
+    investigation: InvestigationOut | None = None
     overrides: list[OverrideOut] = Field(default_factory=list)
 
 
@@ -123,7 +161,7 @@ def expense_out(e: Expense, detail: bool = True) -> ExpenseOut:
                      employee_name=e.employee_name, submit_date=e.submit_date, note=e.note,
                      has_attachment=e.file_key is not None, file_name=e.file_name,
                      file_type=(e.file_key.rsplit(".", 1)[-1] if e.file_key else None),
-                     attempts=e.attempts, error=e.error, created_at=e.created_at, updated_at=e.updated_at)
+                     agent_status=e.agent_status, attempts=e.attempts, error=e.error, created_at=e.created_at, updated_at=e.updated_at)
     if detail:
         out.claim = {"report_id": e.report_id, "city": e.city, "trip_start": e.trip_start,
                      "trip_end": e.trip_end, "nights": e.nights, "headcount": e.headcount,
@@ -137,6 +175,16 @@ def expense_out(e: Expense, detail: bool = True) -> ExpenseOut:
             invoice_fields=r.extraction.get("fields") or {}, llm_calls=r.llm_calls,
             vlm_calls=r.vlm_calls, tokens=r.tokens, latency_ms=r.latency_ms, versions=r.versions,
             created_at=r.created_at)
+    if detail and e.investigations:
+        iv = e.investigations[-1]
+        r = iv.result or {}
+        out.investigation = InvestigationOut(
+            status=iv.status, decision_before=iv.decision_before, decision_after=iv.decision_after,
+            question=iv.question, reply=iv.reply, asked_at=iv.asked_at, replied_at=iv.replied_at,
+            summary=r.get("summary", ""), steps=r.get("steps", []), findings=r.get("findings", []),
+            open_items=r.get("open_items", []), initial_results=r.get("initial_results", []),
+            llm_calls=iv.llm_calls, tool_calls=iv.tool_calls, tokens=iv.tokens, latency_ms=iv.latency_ms,
+            error=r.get("error", ""))
     if detail:
         out.overrides = [OverrideOut(reviewer=o.reviewer, decision=o.decision, note=o.note,
                                      created_at=o.created_at) for o in e.overrides]
@@ -180,7 +228,7 @@ def create_app(settings: Settings | None = None, store: ObjectStore | None = Non
             e = sess.get(Expense, expense_id)
             if e is None:
                 raise HTTPException(404, "报销单不存在")
-            _ = e.reviews, e.overrides            # 在会话内加载关联数据
+            _ = e.reviews, e.overrides, e.investigations      # 在会话内加载关联数据
             return e
 
     # ---------- 提交 ----------
@@ -285,6 +333,8 @@ def create_app(settings: Settings | None = None, store: ObjectStore | None = Non
                       pending: Annotated[bool, Query(description="只看还没有财务复核的")] = False,
                       reviewed: Annotated[bool, Query(description="只看财务已经复核过的")] = False,
                       employee_id: str | None = None,
+                      agent_status: Annotated[str | None, Query(
+                          description="调查进度：awaiting_employee 等员工答复 / resolved / unresolved")] = None,
                       limit: Annotated[int, Query(ge=1, le=200)] = 50,
                       offset: Annotated[int, Query(ge=0)] = 0):
         q = select(Expense).order_by(Expense.created_at.desc()).limit(limit).offset(offset)
@@ -298,6 +348,8 @@ def create_app(settings: Settings | None = None, store: ObjectStore | None = Non
             q = q.where(Expense.final_decision.is_not(None))
         if employee_id:
             q = q.where(Expense.employee_id == employee_id)
+        if agent_status:
+            q = q.where(Expense.agent_status == agent_status)
         with session(db) as sess:
             return [expense_out(e, detail=False) for e in sess.scalars(q)]
 
@@ -358,12 +410,40 @@ def create_app(settings: Settings | None = None, store: ObjectStore | None = Non
             res = sess.execute(update(Expense).where(
                 Expense.id == expense_id,
                 Expense.status.in_([ExpenseStatus.DONE, ExpenseStatus.FAILED]))
-                .values(status=ExpenseStatus.QUEUED, attempts=0, error=None, updated_at=utcnow()))
+                .values(status=ExpenseStatus.QUEUED, attempts=0, error=None, agent_status=None,
+                        updated_at=utcnow()))
             if res.rowcount == 0:
                 load(expense_id)                          # 不存在时返回 404
                 raise HTTPException(409, "只有审核完成或失败的单子可以重新审核")
             audit(sess, expense_id, "rereview_requested", actor=actor)
         e = load(expense_id)
+        enqueue(expense_id, e.file_key)
+        return expense_out(load(expense_id))
+
+    @app.post("/v1/expenses/{expense_id}/reply", status_code=202, response_model=ExpenseOut,
+              dependencies=[Depends(auth)], tags=[EMP], summary="答复审核追问",
+              description="调查 Agent 向员工追问时（`agent_status=awaiting_employee`，问题在 `investigation.question`），"
+                          "员工用这个接口答复。答复后单子重新排队，Agent 从断点继续调查。"
+                          "财务已经复核过的单子不再接受答复。")
+    def reply(expense_id: str, body: ReplyIn):
+        e = load(expense_id)
+        if e.agent_status != AgentStatus.AWAITING or not e.investigations:
+            raise HTTPException(409, "这笔报销没有在等待答复")
+        if e.final_decision is not None:
+            raise HTTPException(409, "财务已经复核，不再需要答复")
+        if e.employee_id and body.employee_id.strip() != e.employee_id:
+            raise HTTPException(403, "只有提交人本人可以答复")
+        iv = e.investigations[-1]
+        with session(db) as sess:
+            res = sess.execute(update(Expense).where(
+                Expense.id == expense_id, Expense.agent_status == AgentStatus.AWAITING,
+                Expense.final_decision.is_(None))
+                .values(status=ExpenseStatus.QUEUED, agent_status=AgentStatus.REPLIED, updated_at=utcnow()))
+            if res.rowcount == 0:                    # 并发：刚被财务复核或已答复
+                raise HTTPException(409, "这笔报销没有在等待答复")
+            sess.execute(update(Investigation).where(Investigation.id == iv.id)
+                         .values(reply=body.reply.strip(), replied_at=utcnow()))
+            audit(sess, expense_id, "employee_replied", actor=body.employee_id or "employee")
         enqueue(expense_id, e.file_key)
         return expense_out(load(expense_id))
 
@@ -378,6 +458,9 @@ def create_app(settings: Settings | None = None, store: ObjectStore | None = Non
                                             .group_by(Expense.decision)).all())
             reviewed = sess.execute(select(Expense.decision, Expense.final_decision)
                                     .where(Expense.final_decision.is_not(None))).all()
+            by_agent = dict(sess.execute(select(Expense.agent_status, func.count())
+                                         .where(Expense.agent_status.is_not(None))
+                                         .group_by(Expense.agent_status)).all())
         done = sum(by_decision.values())
         # 人机一致率只看系统下了定论（通过 / 驳回）的单子：转人工本来就是让人来定，不存在“一致”与否
         decided = [(d, f) for d, f in reviewed if d in ("approve", "reject")]
@@ -396,6 +479,10 @@ def create_app(settings: Settings | None = None, store: ObjectStore | None = Non
             "agreement_base": len(decided),
             # 转人工的单子，财务最后怎么定的
             "review_resolved": resolved,
+            # 调查 Agent：调查过多少笔、有多少调查后有了定论（不用再转人工）、多少在等员工答复
+            "agent": {"investigated": sum(by_agent.values()), "by_status": by_agent,
+                      "resolved_rate": round(by_agent.get(AgentStatus.RESOLVED, 0) / sum(by_agent.values()), 4)
+                      if by_agent else None},
         }
 
     # ---------- 健康检查 ----------
@@ -472,7 +559,7 @@ def _by_idempotency(db: str, key: str | None) -> Expense | None:
     with session(db) as sess:
         e = sess.scalar(select(Expense).where(Expense.idempotency_key == key))
         if e is not None:
-            _ = e.reviews, e.overrides
+            _ = e.reviews, e.overrides, e.investigations
         return e
 
 

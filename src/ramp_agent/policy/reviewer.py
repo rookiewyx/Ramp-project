@@ -57,6 +57,7 @@ class PolicyReviewer:
     # ---------------- 语义问题收集 ----------------
     def _semantic_request(self, c: Claim) -> SemanticRequest:
         req = SemanticRequest(category=c.category, amount=c.amount, note=c.note,
+                              supplement="\n".join(c.supplements),
                               pii_names=[c.employee_name] if c.employee_name else [])
         if c.has_attachment:
             for i in c.invoice.items:
@@ -65,11 +66,15 @@ class PolicyReviewer:
                     req.keyword_hits[i.name] = hit[1]
                 if (hit or not self.policy.is_safe_item(i.name)) and i.name not in req.items_to_check:
                     req.items_to_check.append(i.name)
+        if req.items_to_check and c.merchant:          # 调查时查到的销售方登记信息，帮助判断明细
+            req.merchant = f"{c.merchant.get('category', '')}；经营范围：{c.merchant.get('scope', '')}"
         lim = self.policy.limits
-        if c.category == "taxi" and c.amount > lim.taxi_per_ride and c.note.strip():
+        if c.category == "taxi" and c.amount > lim.taxi_per_ride and c.full_note.strip():
             req.need_taxi_reason = True
-        if c.category == "entertainment" and not c.headcount and c.note.strip():
+        if c.category == "entertainment" and not c.headcount and c.full_note.strip():
             req.need_headcount = True
+        if c.category == "hotel" and not c.nights and c.supplements:
+            req.need_nights = True
         return req
 
     # ---------------- 规则 ----------------
@@ -84,8 +89,11 @@ class PolicyReviewer:
         P, lim = self.policy, self.policy.limits
         out: list[RuleResult] = []
 
-        def add(rule: str, status: Status, reason: str = "", by: str = "code") -> None:
-            out.append(RuleResult(rule=rule, status=status, reason=reason, by=by))
+        def add(rule: str, status: Status, reason: str = "", by: str = "code", kind: str = "") -> None:
+            if status == Status.UNCERTAIN and not kind and not c.extraction_failed:
+                kind = "field_uncertain"         # 默认：发票字段可疑导致的不确定
+            out.append(RuleResult(rule=rule, status=status, reason=reason, by=by,
+                                  kind=kind if status != Status.PASS else ""))
 
         # R9 附件
         if not c.has_attachment:
@@ -107,12 +115,16 @@ class PolicyReviewer:
         # R1 住宿
         if c.category == "hotel":
             cap = P.hotel_cap(c.city)
-            if not c.nights:
-                add("R1", Status.UNCERTAIN, "未填写住宿晚数")
+            nights, by = c.nights, "code"
+            if not nights and sem.nights:                 # 员工补充说明里写的晚数
+                nights, by = sem.nights, "llm"
+            if not nights:
+                add("R1", Status.UNCERTAIN, "未填写住宿晚数", kind="missing_info")
             else:
-                per = round(c.amount / c.nights, 2)
+                per = round(c.amount / nights, 2)
                 add("R1", Status.VIOLATED if per > cap else Status.PASS,
-                    f"{c.city or '未知城市'}住宿 {per} 元/晚，标准 {cap:.0f} 元")
+                    f"{c.city or '未知城市'}住宿 {nights} 晚，{per} 元/晚，标准 {cap:.0f} 元"
+                    if by == "llm" else f"{c.city or '未知城市'}住宿 {per} 元/晚，标准 {cap:.0f} 元", by)
 
         # R2 餐饮 / 招待
         if c.category == "meal":
@@ -122,11 +134,11 @@ class PolicyReviewer:
             heads, by = c.headcount, "code"
             if not heads and sem.headcount:
                 heads, by = sem.headcount, "llm"
-            if not heads and (not c.note.strip() or sem.answered):
+            if not heads and (not c.full_note.strip() or sem.answered):
                 add("R2", Status.VIOLATED, "报销说明未注明招待人数，无法计算人均",
-                    "llm" if sem.answered else "code")
+                    "llm" if sem.answered else "code", kind="missing_info")
             elif not heads:
-                add("R2", Status.UNCERTAIN, f"需要从说明“{c.note}”中确认招待人数")
+                add("R2", Status.UNCERTAIN, f"需要从说明“{c.full_note}”中确认招待人数", kind="missing_info")
             else:
                 per = round(c.amount / heads, 2)
                 add("R2", Status.VIOLATED if per > lim.entertainment_per_head else Status.PASS,
@@ -138,14 +150,16 @@ class PolicyReviewer:
         if over_class:
             add("R3", Status.VIOLATED, f"舱位/座席超标：{'、'.join(over_class)}")
         elif c.category == "taxi" and c.amount > lim.taxi_per_ride:
-            if not c.note.strip():
-                add("R3", Status.VIOLATED, f"打车 {c.amount} 元超过 {lim.taxi_per_ride:.0f} 元，且未说明原因")
+            if not c.full_note.strip():
+                add("R3", Status.VIOLATED, f"打车 {c.amount} 元超过 {lim.taxi_per_ride:.0f} 元，且未说明原因",
+                    kind="missing_info")
             elif sem.taxi_reason_valid is True:
                 add("R3", Status.PASS, f"超标理由成立：{sem.taxi_reason_explanation}", "llm")
             elif sem.taxi_reason_valid is False:
-                add("R3", Status.VIOLATED, f"超标理由不成立：{sem.taxi_reason_explanation}", "llm")
+                add("R3", Status.VIOLATED, f"超标理由不成立：{sem.taxi_reason_explanation}", "llm",
+                    kind="missing_info")
             else:
-                add("R3", Status.UNCERTAIN, f"打车超标，需判断说明“{c.note}”是否成立")
+                add("R3", Status.UNCERTAIN, f"打车超标，需判断说明“{c.full_note}”是否成立", kind="missing_info")
         elif c.category in ("taxi", "train", "flight"):
             add("R3", Status.PASS)
 
@@ -177,7 +191,7 @@ class PolicyReviewer:
             if c.category in P.travel_categories and c.trip_start and c.trip_end:
                 inside = c.trip_start <= c.invoice.issue_date <= c.trip_end
                 add("R5_outside_trip", Status.PASS if inside else Status.VIOLATED,
-                    f"开票日 {c.invoice.issue_date}，出差 {c.trip_start}~{c.trip_end}")
+                    f"开票日 {c.invoice.issue_date}，出差 {c.trip_start}~{c.trip_end}", kind="outside_trip")
 
         # R6 重复报销
         if not self._certain(c, "invoice_no"):
@@ -190,13 +204,13 @@ class PolicyReviewer:
         # R7 大额预审批
         if c.amount > lim.preapproval_threshold:
             add("R7", Status.PASS if c.preapproval_id else Status.VIOLATED,
-                f"单笔 {c.amount} 元，预审批：{c.preapproval_id or '无'}")
+                f"单笔 {c.amount} 元，预审批：{c.preapproval_id or '无'}", kind="no_preapproval")
 
         # R8 不予报销项目
         #   - 命中禁报关键词：有大模型时由它确认商品本身是否就是这类物品（“红酒杯”不是酒）；
         #     没有大模型时按命中处理。
         #   - 不在正常名单里的：交给大模型；它答不上来或看不出是什么，转人工。
-        hits, unknown, llm_hits, cleared = [], [], [], False
+        hits, unknown, llm_hits, cleared, keyword_confirmed = [], [], [], False, False
         for n in names:
             hit = P.prohibited_hit(n)
             if not hit and P.is_safe_item(n):
@@ -207,17 +221,20 @@ class PolicyReviewer:
             elif v is None or v.prohibited is None:
                 unknown.append(n)
             elif v.prohibited:
+                keyword_confirmed = keyword_confirmed or bool(hit)
                 llm_hits.append(f"{n}（{v.category or (hit[0] if hit else '')}：{v.reason}）")
             else:
                 cleared = True
         if hits:
             add("R8", Status.VIOLATED, "明细含不予报销项目：" + "；".join(hits))
         elif llm_hits:
-            add("R8", Status.VIOLATED, "明细含不予报销项目：" + "；".join(llm_hits), "llm")
+            # 只凭大模型对名称的理解判定的（没有命中禁报关键词），调查时可以查销售方登记再判断一次
+            add("R8", Status.VIOLATED, "明细含不予报销项目：" + "；".join(llm_hits), "llm",
+                kind="" if keyword_confirmed else "llm_item")
         elif unknown:
-            add("R8", Status.UNCERTAIN, "以下明细需要人工判断：" + "、".join(unknown))
+            add("R8", Status.UNCERTAIN, "以下明细需要人工判断：" + "、".join(unknown), kind="unclear_item")
         elif not names:
-            add("R8", Status.UNCERTAIN, "未识别出发票明细")
+            add("R8", Status.UNCERTAIN, "未识别出发票明细", kind="unresolvable")
         else:
             add("R8", Status.PASS, by="llm" if cleared else "code")
         return out

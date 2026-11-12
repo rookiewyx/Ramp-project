@@ -8,7 +8,7 @@ from __future__ import annotations
 import pytest
 from alembic.autogenerate import compare_metadata
 from alembic.runtime.migration import MigrationContext
-from sqlalchemy import inspect
+from sqlalchemy import inspect, text
 
 from ramp_agent.service import migrate
 from ramp_agent.service.db import Base, Expense, get_engine, session
@@ -37,10 +37,17 @@ def test_downgrade_and_upgrade_round_trip(db_url):
 
 
 def test_legacy_create_all_database_is_adopted(db_url):
-    """引入迁移之前用 create_all 建的库：不重建、不丢数据，直接标记为第一版再往上升。"""
-    Base.metadata.create_all(get_engine(db_url))
-    with session(db_url) as s:
-        s.add(Expense(id="legacy1", category="meal", amount=88, submit_date="2026-11-01"))
+    """引入迁移之前用 create_all 建的库：不重建、不丢数据，直接标记为第一版再往上升。
+
+    那时的结构就是第一版：先升到 0001 再删掉版本表，模拟当时 create_all 建出来的库。
+    （不能直接用现在的 Base.metadata.create_all，它已经包含后面版本加的表和字段。）"""
+    migrate.upgrade(db_url, migrate.BASELINE)
+    with get_engine(db_url).begin() as conn:
+        conn.execute(text("DROP TABLE alembic_version"))
+        conn.execute(text("INSERT INTO expenses (id, request_hash, report_id, employee_id, employee_name, "
+                          "category, amount, submit_date, note, status, attempts, created_at, updated_at) "
+                          "VALUES ('legacy1', '', '', '', '', 'meal', 88, '2026-11-01', '', 'done', 0, "
+                          "'2026-11-01 00:00:00', '2026-11-01 00:00:00')"))
     migrate.upgrade(db_url)
     assert migrate.current(db_url) == migrate.head()
     with session(db_url) as s:

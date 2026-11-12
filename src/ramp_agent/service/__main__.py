@@ -4,7 +4,7 @@
   python -m ramp_agent.service migrate           查看版本；-m 生成迁移脚本；--sql 导出升级 SQL
   python -m ramp_agent.service api               启动接口（http://127.0.0.1:8080/docs）
   python -m ramp_agent.service worker            启动审核 worker（需要 Redis）
-  python -m ramp_agent.service requeue           补投卡住的单子（可以放进定时任务，每分钟一次）
+  python -m ramp_agent.service requeue           补投卡住的单子、收尾追问超时的单子（可以放进定时任务，每分钟一次）
 """
 
 from __future__ import annotations
@@ -92,7 +92,9 @@ def main(argv: list[str] | None = None) -> None:
     elif args.cmd == "requeue":
         from .tasks import requeue
 
-        print(f"[service] 补投 {requeue(args.older_than)} 笔")
+        from .tasks import expire_waiting
+
+        print(f"[service] 补投 {requeue(args.older_than)} 笔；追问员工超时收尾 {expire_waiting()} 笔")
 
 
 if __name__ == "__main__":

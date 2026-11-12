@@ -25,6 +25,8 @@ RUN --mount=type=cache,target=/root/.cache/uv uv pip install -r pyproject.toml
 # 代码和制度文件。以可编辑方式安装，项目根目录就是 /app，制度文件按 /app/policies 读取
 COPY src ./src
 COPY policies ./policies
+# 调查 Agent 演示用的公司系统数据（ENTERPRISE_FIXTURE），真实部署时换成对接 OA / 税务查验的接口
+COPY evalsets/enterprise_demo.json ./evalsets/
 RUN uv pip install --no-deps -e .
 
 # 不用 root 运行。data/objects 先建好并交给 app 用户：

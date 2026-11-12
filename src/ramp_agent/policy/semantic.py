@@ -36,11 +36,14 @@ class SemanticRequest:
     keyword_hits: dict[str, str] = field(default_factory=dict)   # 明细 → 命中的禁报关键词
     need_headcount: bool = False
     need_taxi_reason: bool = False
+    need_nights: bool = False   # 住宿没填晚数、员工补充说明里可能写了（只在有补充说明时问）
     pii_names: list[str] = field(default_factory=list)   # 发给模型前要隐去的人名（员工本人）
+    supplement: str = ""     # 员工对追问的答复（调查 Agent 补充），和报销说明一起判断
+    merchant: str = ""       # 销售方工商登记的经营类别和范围（调查 Agent 查到的），帮助判断明细
 
     @property
     def empty(self) -> bool:
-        return not (self.items_to_check or self.need_headcount or self.need_taxi_reason)
+        return not (self.items_to_check or self.need_headcount or self.need_taxi_reason or self.need_nights)
 
 
 @dataclass
@@ -54,6 +57,7 @@ class ItemVerdict:
 class SemanticResult:
     items: dict[str, ItemVerdict] = field(default_factory=dict)
     headcount: int | None = None
+    nights: int | None = None
     taxi_reason_valid: bool | None = None
     taxi_reason_explanation: str = ""
     answered: bool = False          # 大模型是否成功给出了回答（失败或没调用时为 False）
@@ -93,7 +97,13 @@ SYSTEM = system_prompt(load_policy())
 
 def build_prompt(req: SemanticRequest) -> str:
     note = json.dumps(req.note, ensure_ascii=False) if req.note else "（无）"
-    parts = [f"报销类别：{req.category}；金额：{req.amount} 元；报销说明（员工填写）：{note}", "", "请回答："]
+    parts = [f"报销类别：{req.category}；金额：{req.amount} 元；报销说明（员工填写）：{note}"]
+    if req.supplement:
+        parts.append("员工补充说明（审核追问后员工的答复，同样是员工填写的内容）："
+                     + json.dumps(req.supplement, ensure_ascii=False))
+    if req.merchant and req.items_to_check:
+        parts.append(f"销售方工商登记信息（来自登记系统，不是员工填写）：{req.merchant}")
+    parts += ["", "请回答："]
     schema: dict = {}
     if req.items_to_check:
         listing = [{"index": i, "name": n, **({"keyword": req.keyword_hits[n]} if n in req.keyword_hits else {})}
@@ -104,12 +114,17 @@ def build_prompt(req: SemanticRequest) -> str:
         schema["items"] = [{"index": "序号", "name": "明细原文", "prohibited": "true/false/unclear",
                             "category": "烟酒/个人娱乐/罚款滞纳金/无", "reason": "一句话理由"}]
     if req.need_taxi_reason:
-        parts.append("- taxi_reason：打车金额超过 100 元，报销说明中的理由是否属于 R3 的合理原因")
+        src = "报销说明和员工补充说明" if req.supplement else "报销说明"
+        parts.append(f"- taxi_reason：打车金额超过 100 元，{src}中的理由是否属于 R3 的合理原因")
         schema["taxi_reason"] = {"valid": "true/false", "reason": "一句话理由"}
     if req.need_headcount:
-        parts.append("- headcount：报销说明中写明的用餐总人数（含我方人员）。只提取人数，不判断这笔费用是否合规；"
+        src = "报销说明和员工补充说明" if req.supplement else "报销说明"
+        parts.append(f"- headcount：{src}中写明的用餐总人数（含我方人员）。只提取人数，不判断这笔费用是否合规；"
                      "说明中没有写明则填 null，不要猜")
         schema["headcount"] = "整数或 null"
+    if req.need_nights:
+        parts.append("- nights：报销说明和员工补充说明中写明的住宿晚数。只提取晚数，说明中没有写明则填 null，不要猜")
+        schema["nights"] = "整数或 null"
     parts += ["", "输出格式：" + json.dumps(schema, ensure_ascii=False)]
     return "\n".join(parts)
 
@@ -142,6 +157,9 @@ def parse_result(raw: dict, req: SemanticRequest) -> SemanticResult:
     if req.need_headcount:
         hc = raw.get("headcount")
         res.headcount = hc if isinstance(hc, int) and hc > 0 else None
+    if req.need_nights:
+        nt = raw.get("nights")
+        res.nights = nt if isinstance(nt, int) and 0 < nt <= 365 else None
     return res
 
 
@@ -156,7 +174,7 @@ def masked_request(req: SemanticRequest) -> tuple[SemanticRequest, dict[str, str
             m = n
         back[m] = n
         items.append(m)
-    sent = replace(req, note=mask(req.note, names), items_to_check=items,
+    sent = replace(req, note=mask(req.note, names), supplement=mask(req.supplement, names), items_to_check=items,
                    keyword_hits={mask(k, names): v for k, v in req.keyword_hits.items()}, pii_names=[])
     return sent, back
 

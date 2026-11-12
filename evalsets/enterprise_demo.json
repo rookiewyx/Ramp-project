@@ -1,0 +1,21 @@
+{
+  "_说明": "审核服务演示用的公司系统数据（ENTERPRISE_FIXTURE）。真实部署时换成对接 OA、税务发票查验、工商登记的接口。员工 E001 对应工作台“提交报销”的默认工号。",
+  "travel_requests": [
+    {"id": "TR-2026-1102", "employee_id": "E001", "city": "武汉", "start": "2026-10-26", "end": "2026-10-31",
+     "status": "approved", "purpose": "客户项目驻场", "changes": "10-29 申请延期一天，已批准"},
+    {"id": "TR-2026-1120", "employee_id": "E001", "city": "上海", "start": "2026-11-03", "end": "2026-11-05",
+     "status": "pending", "purpose": "行业展会", "changes": ""}
+  ],
+  "preapprovals": [
+    {"id": "PA-2026-0388", "employee_id": "E001", "category": "conference", "amount_cap": 8000, "status": "approved",
+     "valid_from": "2026-10-01", "valid_to": "2026-12-31", "approver": "部门负责人", "purpose": "年度渠道大会"},
+    {"id": "PA-2026-0402", "employee_id": "E001", "category": "conference", "amount_cap": 9000, "status": "pending",
+     "valid_from": "2026-10-01", "valid_to": "2026-12-31", "approver": "部门负责人", "purpose": "年度渠道大会（追加）"}
+  ],
+  "invoices": [],
+  "merchants": [
+    {"id": "M-330102-0091", "name": "金樽娱乐会所有限公司", "category": "娱乐场所", "scope": "KTV、歌舞娱乐服务、酒水零售"},
+    {"id": "M-430102-0217", "name": "湘味楼餐饮管理有限公司", "category": "餐饮", "scope": "中餐服务、餐饮管理"},
+    {"id": "M-000000-0001", "name": "样例商户", "category": "餐饮", "scope": "餐饮服务（演示数据）"}
+  ]
+}

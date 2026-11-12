@@ -43,6 +43,21 @@ def sample_scan(tmp_path, sample_pdf):
 
 
 @pytest.fixture
+def make_pdf(tmp_path):
+    """生成一张文字版 PDF 发票，返回文件内容（审核服务的测试用）。"""
+    from gen_synthetic import COMPANY, COMPANY_TAX_ID, Invoice, render_pdf
+
+    def _make(invoice_no="89000000000000000001", items=(("餐饮服务", 88.0),), issue="2026-10-28"):
+        inv = Invoice(invoice_no=invoice_no, issue_date=issue, seller="样例商户", buyer_name=COMPANY,
+                      buyer_tax_id=COMPANY_TAX_ID, items=[{"name": n, "amount": a} for n, a in items],
+                      total=round(sum(a for _, a in items), 2), tax_rate=0.06)
+        path = tmp_path / f"{invoice_no}.pdf"
+        render_pdf(inv, path)
+        return path.read_bytes()
+    return _make
+
+
+@pytest.fixture
 def db_url(tmp_path):
     """业务库地址。默认是临时 SQLite；设置了 RAMP_TEST_DATABASE_URL（CI 里的 MySQL / PostgreSQL）就用它，
     用前用后清空所有表，保证每个测试从空库开始。"""

@@ -61,6 +61,12 @@
   .hint { color: var(--muted); font-size: 12px; width: 100%; }
   #msg { font-size: 13px; color: var(--muted); }
   .empty { color: var(--muted); padding: 40px; text-align: center; }
+  .sus { color: var(--reject); font-size: 12px; margin-left: 6px; font-weight: 600; }
+  .world h3 { font-size: 14px; margin: 14px 0 2px; }
+  .world .none { color: var(--muted); font-size: 13px; }
+  .world td { font-size: 13px; vertical-align: top; }
+  .other { color: var(--muted); }
+  .reply { border-left: 3px solid var(--accent); }
 </style>
 </head>
 <body>
@@ -187,15 +193,23 @@ function render(c) {
   }
   const ikv = el("dl", {class: "kv"});
   // 号码类字段用等宽字体，字母 O 和数字 0 才分得清；空字段明确显示“（空）”，不留白
-  const addi = (a, b, mono = false) => ikv.append(el("dt", {}, a),
-    (b === null || b === undefined || b === "") ? el("dd", {class: "blank"}, "（空）")
-                                                : el("dd", mono ? {class: "mono"} : {}, String(b)));
-  addi("发票号码", inv.invoice_no, true); addi("开票日期", inv.issue_date); addi("销售方", inv.seller);
-  addi("购买方", inv.buyer_name); addi("购买方税号", inv.buyer_tax_id, true); addi("价税合计", inv.total != null ? `${inv.total} 元` : null);
-  card.append(el("h2", {style: "margin-top:16px"}, k.has_attachment ? "发票" : "发票（员工填写的信息，未附文件）"), ikv);
+  const sus = new Set(k.uncertain_fields || []);
+  const addi = (a, b, mono = false, f = "") => {
+    const dd = (b === null || b === undefined || b === "") ? el("dd", {class: "blank"}, "（空）")
+                                                          : el("dd", mono ? {class: "mono"} : {}, String(b));
+    if (sus.has(f)) dd.append(el("span", {class: "sus"}, "识别可疑"));
+    ikv.append(el("dt", {}, a), dd);
+  };
+  addi("发票号码", inv.invoice_no, true, "invoice_no"); addi("开票日期", inv.issue_date, false, "issue_date");
+  addi("销售方", inv.seller, false, "seller"); addi("购买方", inv.buyer_name, false, "buyer_name");
+  addi("购买方税号", inv.buyer_tax_id, true, "buyer_tax_id");
+  addi("价税合计", inv.total != null ? `${inv.total} 元` : null, false, "total");
+  const title = k.world ? "发票（识别结果，可能有识别错误）" : (k.has_attachment ? "发票" : "发票（员工填写的信息，未附文件）");
+  card.append(el("h2", {style: "margin-top:16px"}, title), ikv);
   const tb = el("table", {}, el("tr", {}, el("th", {}, "明细"), el("th", {class: "num"}, "金额")));
   for (const it of inv.items || []) tb.append(el("tr", {}, el("td", {}, it.name), el("td", {class: "num"}, it.amount.toFixed(2))));
   card.append(tb);
+  if (k.world) renderWorld(card, k);
 
   const lb = c.label || {};
   setDecision(lb.decision || null);
@@ -205,6 +219,34 @@ function render(c) {
   $("save").disabled = c.frozen;
   $("msg").textContent = c.label ? "已标注过，可修改" : "";
   window.scrollTo(0, 0);
+}
+
+// 调查评测集：公司系统里的记录和员工答复。按这些信息判断这笔报销按制度最终应该是什么结论
+function renderWorld(card, k) {
+  const w = k.world, box = el("div", {class: "world"});
+  box.append(el("h2", {style: "margin-top:18px"}, "公司系统记录"));
+  const table = (name, rows, cols) => {
+    box.append(el("h3", {}, name));
+    if (!rows.length) { box.append(el("div", {class: "none"}, "没有记录")); return; }
+    const t = el("table", {}, el("tr", {}, ...cols.map(c => el("th", {}, c[0]))));
+    for (const r of rows) t.append(el("tr", r.owner === "其他员工" ? {class: "other"} : {},
+      ...cols.map(c => el("td", c[2] ? {class: "mono"} : {}, String(c[1](r) ?? "")))));
+    box.append(t);
+  };
+  const st = {approved: "已批准", pending: "审批中", cancelled: "已撤销", rejected: "已驳回"};
+  table("出差申请（OA）", w.travel_requests, [["编号", r => r.id, 1], ["人员", r => r.owner], ["城市", r => r.city],
+    ["起止", r => `${r.start} ~ ${r.end}`], ["状态", r => st[r.status] || r.status], ["事由 / 变更", r => [r.purpose, r.changes].filter(Boolean).join("；")]]);
+  table("费用预审批（OA）", w.preapprovals, [["编号", r => r.id, 1], ["人员", r => r.owner],
+    ["类别", r => r.category === "any" ? "不限" : (CAT[r.category] || r.category)], ["上限", r => `${r.amount_cap} 元`],
+    ["状态", r => st[r.status] || r.status], ["有效期", r => `${r.valid_from} ~ ${r.valid_to}`], ["事由", r => r.purpose]]);
+  table("税务发票查验（按真实票面登记）", w.invoices, [["发票号码", r => r.invoice_no, 1], ["开票日期", r => r.issue_date],
+    ["价税合计", r => r.total], ["购买方", r => r.buyer_name || "（空）"], ["购买方税号", r => r.buyer_tax_id || "（空）", 1],
+    ["状态", r => r.status]]);
+  table("销售方工商登记", w.merchants, [["名称", r => r.name], ["经营类别", r => r.category], ["经营范围", r => r.scope]]);
+  box.append(el("h3", {}, "如果审核追问，员工会这样答复"));
+  box.append(el("div", {class: "note reply"}, k.employee_reply ?? "（员工不会回复）"));
+  box.append(el("div", {class: "none"}, "灰色的行是其他员工的记录。请综合报销单、发票、系统记录和员工答复，按制度判断这笔报销最终应该是什么结论。"));
+  card.append(box);
 }
 
 function setDecision(d) {

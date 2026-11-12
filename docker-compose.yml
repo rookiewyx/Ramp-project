@@ -29,6 +29,7 @@ x-app: &app
     S3_ACCESS_KEY: ramp
     S3_SECRET_KEY: ramp_dev_secret
     AUTO_MIGRATE: "false"          # 表结构只由 migrate 容器升级，API 和 worker 只检查版本
+    ENTERPRISE_FIXTURE: ${ENTERPRISE_FIXTURE:-evalsets/enterprise_demo.json}   # 调查 Agent 查询的公司系统（演示数据）
     OTEL_ENABLED: "true"
     OTEL_EXPORTER: otlp
     OTEL_EXPORTER_OTLP_ENDPOINT: http://jaeger:4318

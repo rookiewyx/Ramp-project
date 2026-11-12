@@ -32,12 +32,15 @@ def code_hash() -> str:
 
 def prompt_hash() -> str:
     from .. import pii
+    from ..agent import investigator, tools
     from ..extraction import vlm
     from ..policy import semantic
 
-    # 脱敏会改变发给模型的文字，也算进提示词哈希
+    # 脱敏会改变发给模型的文字，也算进提示词哈希；调查 Agent 的系统提示词、报销单描述、工具说明也算
     text = (inspect.getsource(semantic.system_prompt) + inspect.getsource(semantic.build_prompt)
-            + inspect.getsource(semantic.masked_request) + inspect.getsource(pii) + vlm.PROMPT)
+            + inspect.getsource(semantic.masked_request) + inspect.getsource(pii) + vlm.PROMPT
+            + investigator.SYSTEM + inspect.getsource(investigator.user_message)
+            + json.dumps(tools.SPECS, ensure_ascii=False, sort_keys=True))
     return _sha(text.encode())
 
 
@@ -71,8 +74,9 @@ def _start(s: Session, v: DatasetVersion, task: str, note: str, gold: str, param
 
 def run_policy_eval(s: Session, v: DatasetVersion, *, judge=None, note: str = "", gold: str = "auto",
                     extraction_run: int | None = None, extraction_report: Path | None = None,
-                    workers: int = 4) -> Run:
-    from .adapters.policy import policy_metrics, run_policy
+                    workers: int = 4, agent=None) -> Run:
+    """agent：调查 Agent（Investigator），给了就在初审之后做调查，结论按调查后的算，另外记录调查前后对比。"""
+    from .adapters.policy import agent_metrics, policy_metrics, run_policy
 
     lookup = None
     source = "oracle"
@@ -91,12 +95,14 @@ def run_policy_eval(s: Session, v: DatasetVersion, *, judge=None, note: str = ""
 
     settings = get_settings()
     run = _start(s, v, "policy", note, gold,
-                 params={"invoice_fields": source, "llm": judge is not None, "workers": workers},
-                 models={"llm": settings.llm_model if judge is not None else None})
+                 params={"invoice_fields": source, "llm": judge is not None, "workers": workers,
+                         **({"agent": agent.model, "agent_max_steps": agent.max_steps} if agent else {})},
+                 models={"llm": settings.llm_model if judge is not None else None,
+                         **({"agent": agent.model} if agent else {})})
     cases = list(v.cases)
     t0 = time.perf_counter()
     outputs = run_policy([c.payload for c in cases], judge=judge, extraction_lookup=lookup,
-                         workers=workers)
+                         workers=workers, agent=agent)
     run.wall_seconds = round(time.perf_counter() - t0, 2)
 
     items = []
@@ -107,8 +113,10 @@ def run_policy_eval(s: Session, v: DatasetVersion, *, judge=None, note: str = ""
                         llm_calls=out["llm_calls"], tokens=out["tokens"]))
         items.append({"gold": g.decision, "gold_rules": g.rules, "predicted": out["decision"],
                       "violated": out["violated"], "tags": c.tags, "llm_calls": out["llm_calls"],
-                      "tokens": out["tokens"]})
+                      "tokens": out["tokens"], "before": out.get("decision_before"), "agent": out.get("agent")})
     run.metrics = policy_metrics(items)
+    if agent is not None:
+        run.metrics["agent"] = agent_metrics(items)
     run.status = "done"
     s.flush()
     return run

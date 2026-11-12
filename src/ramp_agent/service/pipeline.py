@@ -12,6 +12,9 @@
     在服务里，网络抖动不该直接把单子推给财务，所以前几次尝试遇到模型故障抛 ModelUnavailable 交给队列重试，
     最后一次才接受降级结果。
   - 其他异常（数据库、存储故障）原样抛出，交给任务队列重试。
+  - 调查 Agent：初审转人工、而且问题都能靠补证据解决的，先调查再定结论（见 agent/）。
+    调查要追问员工时，结论先按转人工保存，agent_status 记为等待答复；员工答复（或等待超时）后
+    重新排队，这次不再识别和初审，直接从调查的断点继续（resume）。
 """
 
 from __future__ import annotations
@@ -26,11 +29,22 @@ from loguru import logger
 from opentelemetry.trace import get_current_span as trace_current
 from sqlalchemy import or_, update
 
+from ..agent import AsyncEmployee, FixtureSystems, InvestigationResult, Investigator
+from ..agent.systems import EnterpriseSystems
 from ..config import Settings
-from ..extraction import ExtractionResult, InvoiceExtractor, Tier
-from ..policy import Claim, InvoiceRegistry, PolicyReviewer, SemanticJudge, load_policy
+from ..extraction import ExtractionResult, InvoiceExtractor, InvoiceFields, Tier
+from ..policy import Claim, InvoiceRegistry, PolicyReviewer, Review, SemanticJudge, load_policy
 from ..telemetry import tracer
-from .db import Expense, ExpenseStatus, ReviewRecord, audit, session, utcnow
+from .db import (
+    AgentStatus,
+    Expense,
+    ExpenseStatus,
+    Investigation,
+    ReviewRecord,
+    audit,
+    session,
+    utcnow,
+)
 from .storage import ObjectStore
 
 
@@ -44,6 +58,8 @@ class Deps:
     extractor: InvoiceExtractor
     judge: SemanticJudge | None
     versions: dict
+    investigator: Investigator | None = None      # 不配置就不调查，转人工的直接交给财务
+    systems: EnterpriseSystems | None = None
 
 
 class ModelUnavailable(RuntimeError):
@@ -112,7 +128,11 @@ def process(deps: Deps, expense_id: str, *, final_attempt: bool = True) -> str:
     t0 = time.perf_counter()
     with session(url) as s:
         e = s.get(Expense, expense_id)
+        _ = e.reviews, e.investigations
         audit(s, expense_id, "review_started", attempt=e.attempts)
+    if e.agent_status in (AgentStatus.REPLIED, AgentStatus.EXPIRED) and e.investigations:
+        return _resume(deps, e, final_attempt, t0)
+
     ext = extract(deps, e)
     if not final_attempt and ext is not None and (ext.error or "").startswith("vlm_error"):
         raise ModelUnavailable(f"视觉模型调用失败：{ext.error}")
@@ -125,28 +145,125 @@ def process(deps: Deps, expense_id: str, *, final_attempt: bool = True) -> str:
         raise ModelUnavailable("大模型调用失败")
     with tracer.start_as_current_span("policy.rules"):
         rv = reviewer.review(claim, sem)
+
+    inv = None
+    if deps.investigator is not None and deps.settings.agent_enabled:
+        inv = deps.investigator.run(claim, rv, reviewer, deps.systems or FixtureSystems(), AsyncEmployee(), sem)
+        if inv.status == "error" and not final_attempt:
+            raise ModelUnavailable(f"调查时模型调用失败：{inv.error}")
+        if inv.status == "skipped":
+            inv = None
+    final = inv.review if inv is not None and inv.review is not None else rv
     latency = int((time.perf_counter() - t0) * 1000)
 
     ext_info = {"tier": ext.tier.value, "fields": ext.fields.model_dump(),
                 "uncertain_fields": ext.uncertain_fields, "checks_failed": ext.checks_failed,
                 "error": ext.error, "latency_ms": ext.latency_ms} if ext else {"tier": "none"}
     with tracer.start_as_current_span("pipeline.persist"), session(url) as s:
-        s.add(ReviewRecord(
-            expense_id=expense_id, decision=rv.decision.value,
-            results=[r.model_dump(mode="json") for r in rv.results], explanation=rv.explanation,
-            extraction=ext_info, llm_calls=rv.llm_calls, vlm_calls=ext.model_calls if ext else 0,
-            tokens=rv.prompt_tokens + rv.completion_tokens
-            + ((ext.prompt_tokens + ext.completion_tokens) if ext else 0),
-            latency_ms=latency, versions=deps.versions))
+        s.add(_record(deps, expense_id, final, ext_info, latency,
+                      llm_calls=rv.llm_calls + (inv.llm_calls if inv else 0),
+                      tokens=rv.prompt_tokens + rv.completion_tokens + (inv.tokens if inv else 0)
+                      + ((ext.prompt_tokens + ext.completion_tokens) if ext else 0),
+                      vlm_calls=ext.model_calls if ext else 0))
+        if inv is not None:
+            s.add(Investigation(expense_id=expense_id, status=inv.status, decision_before=inv.decision_before,
+                                decision_after=inv.decision_after if inv.review else None,
+                                question=inv.question, reply=inv.reply,
+                                asked_at=utcnow() if inv.question else None,
+                                result={**inv.to_dict(), "initial_results": _results(rv)}, state=inv.state,
+                                llm_calls=inv.llm_calls, tool_calls=inv.tool_calls, tokens=inv.tokens,
+                                latency_ms=inv.latency_ms))
+            _audit_investigation(s, expense_id, inv)
         s.execute(update(Expense).where(Expense.id == expense_id).values(
-            status=ExpenseStatus.DONE, decision=rv.decision.value, error=None, updated_at=utcnow()))
-        audit(s, expense_id, "reviewed", decision=rv.decision.value,
-              violated=rv.violated_rules, uncertain=rv.uncertain_rules, latency_ms=latency)
+            status=ExpenseStatus.DONE, decision=final.decision.value, error=None,
+            agent_status=_agent_status(inv), updated_at=utcnow()))
+        audit(s, expense_id, "reviewed", decision=final.decision.value,
+              violated=final.violated_rules, uncertain=final.uncertain_rules, latency_ms=latency)
     # 日志里只记 ID 和结论，不记报销说明等可能含个人信息的内容
-    logger.info("审核完成 {} → {}（{} ms，大模型 {} 次）", expense_id, rv.decision.value, latency, rv.llm_calls)
+    logger.info("审核完成 {} → {}（{} ms，大模型 {} 次{}）", expense_id, final.decision.value, latency,
+                rv.llm_calls, f"，调查 {inv.status}" if inv else "")
     span.set_attribute("pipeline.outcome", "done")
-    span.set_attribute("review.decision", rv.decision.value)
+    span.set_attribute("review.decision", final.decision.value)
     return "done"
+
+
+def _resume(deps: Deps, e: Expense, final_attempt: bool, t0: float) -> str:
+    """员工答复了（或等待超时），从调查的断点继续。不重新识别发票，用上次保存的识别结果。"""
+    url = deps.settings.database_url
+    row = e.investigations[-1]
+    last = e.reviews[-1]
+    reply = row.reply if e.agent_status == AgentStatus.REPLIED else None
+    if deps.investigator is None or not row.state:
+        # 调查功能被关掉了，或断点丢失：保持转人工，交给财务
+        with session(url) as s:
+            s.execute(update(Investigation).where(Investigation.id == row.id).values(status="error", state=None))
+            s.execute(update(Expense).where(Expense.id == e.id).values(
+                status=ExpenseStatus.DONE, agent_status=AgentStatus.ERROR, updated_at=utcnow()))
+            audit(s, e.id, "investigation_abandoned", reason="调查未启用或断点丢失")
+        return "done"
+    claim = claim_from_record(e, last.extraction)
+    reviewer = PolicyReviewer(load_policy(), deps.judge, deps.registry)
+    inv = deps.investigator.resume(claim, None, reviewer, deps.systems or FixtureSystems(), row.state,
+                                   row.result, reply)
+    if inv.status == "error" and not final_attempt:
+        raise ModelUnavailable(f"调查时模型调用失败：{inv.error}")
+    final = inv.review
+    latency = int((time.perf_counter() - t0) * 1000)
+    with session(url) as s:
+        if final is not None:
+            s.add(_record(deps, e.id, final, last.extraction, latency, llm_calls=inv.llm_calls - row.llm_calls,
+                          tokens=inv.tokens - row.tokens, vlm_calls=0))
+        s.execute(update(Investigation).where(Investigation.id == row.id).values(
+            status=inv.status, decision_after=final.decision.value if final else None,
+            result={**inv.to_dict(), "initial_results": row.result.get("initial_results", [])}, state=None,
+            llm_calls=inv.llm_calls, tool_calls=inv.tool_calls, tokens=inv.tokens, latency_ms=inv.latency_ms,
+            updated_at=utcnow()))
+        _audit_investigation(s, e.id, inv)
+        decision = final.decision.value if final else e.decision
+        s.execute(update(Expense).where(Expense.id == e.id).values(
+            status=ExpenseStatus.DONE, decision=decision, error=None, agent_status=_agent_status(inv),
+            updated_at=utcnow()))
+        audit(s, e.id, "reviewed", decision=decision, after_investigation=True)
+    logger.info("调查继续 {} → {}（{}）", e.id, decision, inv.status)
+    return "done"
+
+
+def _record(deps: Deps, expense_id: str, rv: Review, ext_info: dict, latency: int, *, llm_calls: int,
+            tokens: int, vlm_calls: int) -> ReviewRecord:
+    return ReviewRecord(expense_id=expense_id, decision=rv.decision.value, results=_results(rv),
+                        explanation=rv.explanation, extraction=ext_info, llm_calls=llm_calls, vlm_calls=vlm_calls,
+                        tokens=tokens, latency_ms=latency, versions=deps.versions)
+
+
+def _results(rv: Review) -> list[dict]:
+    return [r.model_dump(mode="json") for r in rv.results]
+
+
+def _agent_status(inv: InvestigationResult | None) -> str | None:
+    if inv is None:
+        return None
+    return {"awaiting_employee": AgentStatus.AWAITING, "resolved": AgentStatus.RESOLVED,
+            "unresolved": AgentStatus.UNRESOLVED}.get(inv.status, AgentStatus.ERROR)
+
+
+def _audit_investigation(s, expense_id: str, inv: InvestigationResult) -> None:
+    if inv.status == "awaiting_employee":
+        audit(s, expense_id, "employee_asked", actor="agent", question=inv.question)
+    else:
+        audit(s, expense_id, "investigated", actor="agent", status=inv.status, before=inv.decision_before,
+              after=inv.decision_after, tool_calls=inv.tool_calls,
+              accepted=[f["kind"] for f in inv.findings if f["accepted"]])
+
+
+def claim_from_record(e: Expense, extraction: dict) -> Claim:
+    """用保存的识别结果重建报销单（恢复调查时不再重新识别发票）。"""
+    c = build_claim(e, None)
+    tier = extraction.get("tier", "none")
+    if tier != "none" and extraction.get("fields"):
+        c.invoice = InvoiceFields.model_validate(extraction["fields"])
+        c.uncertain_fields = list(extraction.get("uncertain_fields") or [])
+        c.extraction_failed = tier == Tier.FAILED.value
+    return c
 
 
 def release(url: str, expense_id: str, error: str, final: bool) -> None:
