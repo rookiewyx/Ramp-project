@@ -43,6 +43,6 @@ rules:
   R5_late: {outcome: review, title: 提交时限, clause: "所有发票须在开票日起 90 天内提交报销，逾期需人工审核。"}
   R6: {outcome: reject, title: 重复报销, clause: "同一张发票（以发票号码为准）不得重复报销，重复提交直接驳回。"}
   R7: {outcome: review, title: 大额预审批, clause: "单笔金额超过 5000 元须附部门负责人预审批记录，否则需人工审核。"}
-  R8: {outcome: reject, title: 不予报销项目, clause: "烟酒、个人娱乐消费、罚款和滞纳金一律不予报销。"}
+  R8: {outcome: reject, title: 不予报销项目, clause: "烟酒、个人娱乐消费、罚款和滞纳金一律不予报销。个人娱乐消费，指 KTV、歌舞厅、洗浴足浴、棋牌、游戏等娱乐场所或娱乐项目的消费；餐厅、酒楼的包间费、雅间费、服务费属于餐饮，不算个人娱乐。"}
   R9: {outcome: reject, title: 附件要求, clause: "每笔报销须附对应发票；缺少发票的报销单退回补充。"}
   AMT: {outcome: review, title: 金额一致, clause: "报销金额应与发票价税合计一致。（系统校验项，制度未单列）"}

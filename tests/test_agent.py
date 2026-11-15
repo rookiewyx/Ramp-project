@@ -286,3 +286,43 @@ def test_item_judged_only_by_name_can_be_rechecked_with_merchant_registry():
     wine = claim(category="meal", amount=128, note="晚餐", invoice={"total": 128, "items": [{"name": "红酒", "amount": 128}]})
     res, before = investigate(wine, FakeLLM(), world, judge=ItemJudge())
     assert before.decision.value == "reject" and res.status == "skipped"
+
+
+def test_agent_is_told_the_company_tax_id():
+    """模型要知道本公司的抬头和税号，才看得出查验结果里的购买方是不是本公司（留出集 B017 的说明写错过）。"""
+    llm = FakeLLM([("submit_findings", {"summary": ""})])
+    c = claim(category="meal", amount=96, note="午餐", invoice={"total": 96, "items": [{"name": "餐饮服务", "amount": 96}],
+                                                                "buyer_tax_id": "9131O000MA1XHSZ00X"},
+              uncertain_fields=["buyer_tax_id"])
+    investigate(c, llm)
+    user = llm.seen[0]["messages"][1]["content"]
+    assert '"纳税人识别号": "91310000MA1XHSZ00X"' in user and CO in user
+
+
+def test_room_fee_clause_is_in_the_r8_prompt():
+    """R8 口径：餐厅、酒楼的包间费、雅间费属于餐饮（2026-11-14 和 Kin 确认）。"""
+    from ramp_agent.policy.semantic import SemanticRequest, system_prompt
+
+    prompt = system_prompt(load_policy(), SemanticRequest(category="meal", amount=138, note="",
+                                                          items_to_check=["包间费"]))
+    assert "包间费、雅间费、服务费属于餐饮" in prompt
+
+
+def test_unfavourable_verification_is_applied_even_if_not_cited():
+    """查验查到购买方是个人，模型却没有引用（留出集回归 B014）：查验结果是唯一确定的事实，照样采纳。"""
+    c = claim(category="meal", amount=96, note="午餐", invoice={"total": 96, "items": [{"name": "餐饮服务", "amount": 96}],
+                                                                "buyer_tax_id": "9131O000MA1XHSZ00X"},
+              uncertain_fields=["buyer_tax_id"])
+    world = {"invoices": [{"invoice_no": "89000000000000000001", "issue_date": "2026-10-22", "total": 96,
+                           "buyer_name": "个人", "buyer_tax_id": "", "seller": "样例商户", "status": "正常"}]}
+    llm = FakeLLM([("verify_invoice", {"invoice_no": "89000000000000000001", "issue_date": "2026-10-22", "total": 96})],
+                  [("submit_findings", {"summary": "购买方是个人，没有可提交的记录"})])
+    res, _ = investigate(c, llm, world)
+    assert res.decision_after == "reject"
+    assert res.findings[0]["accepted"] and "自动采纳" in res.findings[0]["reason"]
+
+
+def test_counts_from_model_accept_integer_like_values():
+    from ramp_agent.policy.semantic import _count
+
+    assert [_count(x) for x in (4, "4", 4.0, " 5 ", None, "四", 4.5, True)] == [4, 4, 4, 5, None, None, None, None]

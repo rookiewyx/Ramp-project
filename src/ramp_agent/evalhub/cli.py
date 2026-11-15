@@ -126,6 +126,8 @@ STANDARD = [
      "调查开发集：带公司系统数据和员工答复，出题人标注，调试调查 Agent 用"),
     ("investigate", "policy", "evalsets/investigate_v1.jsonl", False, False,
      "调查留出集：盲标、冻结后只跑一次"),
+    ("investigate2", "policy", "evalsets/investigate_v2.jsonl", False, False,
+     "调查第二批留出集（R8 口径澄清之后）：盲标、冻结后只跑一次"),
     ("extract-dev", "extraction", "data/synthetic/expenses.jsonl", False, True, "合成开发集的发票"),
     ("extract-test", "extraction", "data/synthetic_test/expenses.jsonl", False, True, "独立测试集的发票"),
 ]

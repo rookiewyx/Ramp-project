@@ -10,6 +10,11 @@
   员工答复  原样作为补充说明，交给 R2 / R3 的语义判断（模型判断理由是否成立、提取人数）
 
 采纳之后不由 Agent 下结论：补好证据的报销单交回规则引擎，从头再审一遍。
+
+唯一确定的事实不依赖模型是否引用：发票查验（号码、日期、金额三项完全匹配才查得到）和商户登记（名称与销售方一致）
+查到了就是这张票、这家商户，即使模型没有在 submit_findings 里引用，也照样采纳。
+模型有时会把对报销不利的查验结果当作“不适用”而不提交（留出集回归 B014：查到购买方是个人，却没有引用），
+这类事实不能由模型取舍。预审批、出差申请要在多条记录里挑选，仍然只采纳模型引用的那条。
 """
 
 from __future__ import annotations
@@ -82,11 +87,22 @@ def apply_findings(claim: Claim, submitted: dict, box: ToolBox, policy: PolicyCo
             return ref, None
         return ref, got[1]
 
+    def unique_fact(field: str, kind: str, match) -> tuple[str, dict | None, bool]:
+        """模型引用的记录；没引用时，台账里唯一一条符合条件的记录（自动采纳）。"""
+        ref, rec = lookup(field, kind)
+        if rec is not None:
+            return ref, rec, False
+        found = [(rid, r) for rid, (k, r) in box.ledger.items() if k == kind and match(r)]
+        if len(found) == 1:
+            return found[0][0], found[0][1], True
+        return "", None, False
+
     # 发票查验放在最前面：查验可能改正开票日期，后面的预审批、出差申请都按改正后的日期核对
-    ref, rec = lookup("verification_id", "invoice")
+    ref, rec, auto = unique_fact("verification_id", "invoice", lambda r: True)
+    note = "（Agent 未引用，按查验结果自动采纳）" if auto else ""
     if rec is not None:
         if rec.get("status") != "正常":
-            out.append(Finding("invoice", ref, False, f"税务登记的发票状态为 {rec.get('status')}"))
+            out.append(Finding("invoice", ref, False, f"税务登记的发票状态为 {rec.get('status')}{note}"))
         else:
             changed = []
             for f in FIELDS_FROM_TAX:
@@ -95,7 +111,7 @@ def apply_findings(claim: Claim, submitted: dict, box: ToolBox, policy: PolicyCo
                     setattr(c.invoice, f, rec[f])
             c.uncertain_fields = [f for f in c.uncertain_fields if f not in FIELDS_FROM_TAX]
             out.append(Finding("invoice", ref, True, "按税务登记的票面信息核对"
-                               + ("，更正 " + "；".join(changed) if changed else "，与识别结果一致")))
+                               + ("，更正 " + "；".join(changed) if changed else "，与识别结果一致") + note))
 
     ref, rec = lookup("preapproval_id", "preapproval")
     if rec is not None:
@@ -117,13 +133,14 @@ def apply_findings(claim: Claim, submitted: dict, box: ToolBox, policy: PolicyCo
             c.city = c.city or rec.get("city")
             out.append(Finding("travel_request", ref, True, f"出差 {rec.get('city')} {rec['start']}~{rec['end']}，已批准"))
 
-    ref, rec = lookup("merchant_id", "merchant")
+    ref, rec, auto = unique_fact("merchant_id", "merchant", lambda r: same_name(r.get("name"), c.invoice.seller))
+    note = "（Agent 未引用，按登记自动采纳）" if auto else ""
     if rec is not None:
         if not same_name(rec.get("name"), c.invoice.seller):
             out.append(Finding("merchant", ref, False, f"登记名称“{rec.get('name')}”与发票销售方“{c.invoice.seller}”不一致"))
         else:
             c.merchant = {"category": rec.get("category", ""), "scope": rec.get("scope", "")}
-            out.append(Finding("merchant", ref, True, f"经营类别：{rec.get('category')}"))
+            out.append(Finding("merchant", ref, True, f"经营类别：{rec.get('category')}{note}"))
 
     if box.reply and box.reply.strip():
         c.supplements.append(box.reply.strip()[:1000])

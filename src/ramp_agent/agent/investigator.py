@@ -102,10 +102,12 @@ def _brief(result: dict) -> str:
     return dumps(result)[:200]
 
 
-def user_message(claim: Claim, plan) -> str:
+def user_message(claim: Claim, plan, company=None) -> str:
     names = [claim.employee_name] if claim.employee_name else []
     inv = claim.invoice
     data = {
+        # 公司自己的抬头和税号：模型据此看得出查验结果里的购买方是不是本公司，说明才不会写错
+        **({"本公司": {"名称": company.name, "纳税人识别号": company.tax_id}} if company else {}),
         "报销单": {"类别": claim.category, "金额": claim.amount, "提交日期": claim.submit_date,
                  "城市": claim.city, "出差开始": claim.trip_start, "出差结束": claim.trip_end,
                  "住宿晚数": claim.nights, "招待人数": claim.headcount, "预审批编号": claim.preapproval_id,
@@ -145,7 +147,8 @@ class Investigator:
             return res
         box = ToolBox(claim.employee_id, systems, employee, plan.tools,
                       pii_names=[claim.employee_name] if claim.employee_name else [])
-        messages = [{"role": "system", "content": SYSTEM}, {"role": "user", "content": user_message(claim, plan)}]
+        messages = [{"role": "system", "content": SYSTEM},
+                    {"role": "user", "content": user_message(claim, plan, reviewer.policy.company)}]
         return self._loop(claim, review, reviewer, box, messages, res, sem0, steps_left=self.max_steps)
 
     def resume(self, claim: Claim, review: Review, reviewer: PolicyReviewer, systems: EnterpriseSystems,
