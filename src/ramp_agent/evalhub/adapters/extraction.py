@@ -57,8 +57,76 @@ def field_equal(name: str, pred, gt, dataset: str = "synthetic") -> bool:
     return pred == gt
 
 
+# ---------------- 交通票据（真实扫描件，SCID） ----------------
+def ticket_field_equal(name: str, pred, gt) -> bool:
+    """站名类字段放宽：标注有时带航站楼、机场名（“T2拉萨-贡嘎”），模型可能只读出“拉萨”，互相包含就算对。"""
+    from ...extraction.tickets import station
+
+    if pred is None:
+        return False
+    if name in ("amount", "insurance"):
+        return abs(float(pred) - float(gt)) < 0.011
+    if name in ("origin", "destination", "entry", "exit"):
+        a, b = station(pred), station(gt)
+        return bool(a and b) and (a == b or (len(a) >= 2 and a in b) or (len(b) >= 2 and b in a))
+    return pred == gt
+
+
+def run_ticket(smp: dict, vlm) -> dict:
+    from ...extraction.tickets import TicketFields, TicketResult, extract_ticket
+
+    path = Path(smp["path"])
+    path = path if path.is_absolute() else ROOT / path
+    if vlm is None or not path.exists():
+        r = TicketResult(fields=TicketFields(), error="no_vlm" if vlm is None else "no_file")
+    else:
+        r = extract_ticket(vlm, path.read_bytes())
+    failed = bool(r.error)
+    wrong = [] if failed else [k for k, g in smp["gt"].items()
+                               if not ticket_field_equal(k, getattr(r.fields, k), g)]
+    # 没读出来（留空）的字段下游会当作缺失，转人工；读出了一个错的值才是静默错误
+    silent = [k for k in wrong if getattr(r.fields, k) is not None and k not in r.uncertain_fields]
+    return {"tier": "failed" if failed else "vlm", "pred": r.fields.model_dump(), "uncertain": r.uncertain_fields,
+            "checks_failed": [], "error": r.error, "flagged": r.needs_review, "wrong_fields": wrong,
+            "silent_fields": silent, "type_ok": r.fields.doc_type == smp["kind"], "kind": smp["kind"],
+            "scored_fields": list(smp["gt"]), "latency_ms": r.latency_ms, "model_calls": r.model_calls,
+            "tokens": r.prompt_tokens + r.completion_tokens}
+
+
+def ticket_metrics(outputs: list[dict]) -> dict:
+    """按票种、按字段的准确率。字段准确率的分母是“标注里有、且标注本身可读”的字段。"""
+    from collections import defaultdict
+
+    kinds: dict[str, dict] = defaultdict(lambda: {"n": 0, "ok": 0, "silent": 0, "type_ok": 0})
+    fields: dict[str, dict] = defaultdict(lambda: {"n": 0, "ok": 0, "silent": 0})
+    for o in outputs:
+        if o["tier"] == "failed":
+            continue
+        k = kinds[o["kind"]]
+        k["n"] += 1
+        k["ok"] += not o["wrong_fields"]
+        k["silent"] += bool(o["silent_fields"])
+        k["type_ok"] += o["type_ok"]
+        for f in o["scored_fields"]:
+            fields[f]["n"] += 1
+            fields[f]["ok"] += f not in o["wrong_fields"]
+            fields[f]["silent"] += f in o["silent_fields"]
+    n_fields = sum(v["n"] for v in fields.values())
+    return {
+        "field_accuracy": round(sum(v["ok"] for v in fields.values()) / n_fields, 4) if n_fields else None,
+        "silent_field_rate": round(sum(v["silent"] for v in fields.values()) / n_fields, 4) if n_fields else None,
+        "type_accuracy": round(sum(v["type_ok"] for v in kinds.values()) / max(1, sum(v["n"] for v in kinds.values())), 4),
+        "groups": {k: {"n": v["n"], "accuracy": round(v["ok"] / v["n"], 4), "silent": v["silent"],
+                       "type_accuracy": round(v["type_ok"] / v["n"], 4)} for k, v in sorted(kinds.items())},
+        "fields": {f: {"n": v["n"], "accuracy": round(v["ok"] / v["n"], 4), "silent": v["silent"]}
+                   for f, v in sorted(fields.items())},
+    }
+
+
 def run_extraction(samples: list[dict], extractor: InvoiceExtractor, workers: int = 4) -> list[dict]:
     def one(smp: dict) -> dict:
+        if smp.get("schema") == "ticket":
+            return run_ticket(smp, extractor.vlm)
         path = Path(smp["path"])
         r = extractor.extract(path if path.is_absolute() else ROOT / path)
         wrong = [k for k, g in smp["gt"].items() if not field_equal(k, getattr(r.fields, k), g)]
@@ -75,7 +143,9 @@ def extraction_metrics(outputs: list[dict]) -> dict:
     evaluated = [o for o in outputs if o["tier"] != "failed"]
     n = len(evaluated)
     correct = sum(1 for o in evaluated if not o["wrong_fields"])
-    silent = sum(1 for o in evaluated if o["wrong_fields"] and not o["flagged"])
+    # 静默错误：读错了又没有标记。交通票据按字段算（读错的字段没被标为可疑），增值税发票按整张算
+    silent = sum(1 for o in evaluated if (o["silent_fields"] if "silent_fields" in o
+                                          else (o["wrong_fields"] and not o["flagged"])))
     lo, hi = wilson(correct, n)
     tiers: dict[str, int] = {}
     for o in outputs:
@@ -89,4 +159,5 @@ def extraction_metrics(outputs: list[dict]) -> dict:
         "model_calls": sum(o["model_calls"] for o in outputs),
         "tokens": sum(o["tokens"] for o in outputs),
         "avg_latency_ms": round(sum(o["latency_ms"] for o in outputs) / len(outputs), 1) if outputs else 0,
+        **(ticket_metrics(outputs) if any("kind" in o for o in outputs) else {}),
     }

@@ -1,6 +1,6 @@
 """审核任务适配器：报销记录 → Claim → 审核结论，以及审核任务的指标。
 
-scripts/eval_policy.py 和评测平台共用这里的逻辑，保证两边算出来的数字一致。
+评测平台（evalhub run policy）用这里的逻辑审核和打分。
 """
 
 from __future__ import annotations

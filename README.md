@@ -76,6 +76,18 @@ docker compose up -d
 
 核心指标是**静默错误率**：字段读错了、却没被标记为需要复核的比例。读错但被标记的只多一次人工复核，静默错误会直接导致审核误判。
 
+### 真实票据：交通票据识别（`extraction/tickets.py`）
+
+上面的数字来自合成发票。为了知道在真实票据上的表现，引入了 SCID（海康威视研究院，4 万张真实扫描的出租车票、火车票、汽车票、机票行程单、过路费和定额发票；非商业许可，不随仓库分发，下载后放到 `SCID/`）。这几类票据版式各异、没有抬头税号和明细，所以单独一套字段和提示词。
+
+从 testA 分层抽 600 张，qwen3-vl-plus、第一版提示词、没有调过：**整张全对 81.2%（95% 区间 77.8–84.1%），字段准确率 94.5%，有静默错误的票占 13.2%**。火车票、定额发票 100%，出租车票 81.3%（热敏纸褪色，金额读成里程或单价），机票行程单 42.0%（日期读成填开日期；保险费的标注口径有问题，去掉这个字段是 73%）。合成数据上的 98.9% 和 0 静默错误，在真实票据上并不成立，详见 `docs/eval_log.md`。
+
+```powershell
+.venv\Scripts\python scripts\build_scid_evalset.py
+.venv\Scripts\python -m ramp_agent.evalhub import SCID/eval/testA_600/samples.jsonl --dataset scid-testA --task samples --freeze
+.venv\Scripts\python -m ramp_agent.evalhub run extraction --dataset scid-testA
+```
+
 ## 模块二：制度审核（`src/ramp_agent/policy/`）
 
 ```
@@ -103,10 +115,11 @@ docker compose up -d
 
 ```powershell
 .venv\Scripts\python scripts\check_llm.py                                         # 检查大模型配置
-.venv\Scripts\python scripts\eval_policy.py --no-llm                              # 只用规则
-.venv\Scripts\python scripts\eval_policy.py                                       # 规则 + 大模型
-.venv\Scripts\python scripts\eval_policy.py --data evalsets/policy_challenge.jsonl # 语义难例集
-.venv\Scripts\python scripts\eval_policy.py --data data/synthetic_test/expenses.jsonl --extraction reports\<识别结果>.jsonl  # 端到端
+.venv\Scripts\python -m ramp_agent.evalhub init                                                  # 导入各评测集
+.venv\Scripts\python -m ramp_agent.evalhub run policy --dataset policy-dev --no-llm               # 只用规则
+.venv\Scripts\python -m ramp_agent.evalhub run policy --dataset policy-dev                        # 规则 + 大模型
+.venv\Scripts\python -m ramp_agent.evalhub run policy --dataset policy-challenge                  # 语义难例集
+.venv\Scripts\python -m ramp_agent.evalhub run policy --dataset policy-test --extraction-run <识别运行编号>  # 端到端
 ```
 
 `evalsets/policy_challenge.jsonl`（由 `scripts/gen_policy_challenge.py` 生成）是 27 条只有理解语义才能判对的报销，用来衡量大模型的作用。
@@ -380,7 +393,6 @@ docs/eval_log.md             评测记录（每轮改动与指标变化）
 src/ramp_agent/policy/       模块二：制度审核
 policies/policy.yaml         结构化制度
 evalsets/                    语义难例集（入库）
-scripts/eval_policy.py       审核评测（快速版，不入库）
 src/ramp_agent/evalhub/      评测平台（harvest.py：线上数据回流）
 scripts/gen_policy_hard.py   难题集生成（第一批）
 scripts/gen_policy_hard_v2.py 难题集生成（第二批，留出集）

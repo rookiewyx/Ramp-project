@@ -87,7 +87,11 @@ class OpenAICompatibleVLM:
                              timeout=s.vlm_timeout_s, max_retries=s.vlm_max_retries)
         self.max_concurrency = s.vlm_max_concurrency
 
-    def _call(self, image_url: str, extra_hint: str = "") -> tuple[str, int, int]:
+    def ask(self, image: bytes, prompt: str) -> tuple[str, int, int]:
+        """用自定义提示词问一张图（交通票据识别用，见 tickets.py）。返回 (文本, 输入 tokens, 输出 tokens)。"""
+        return self._call(prepare_image(image), prompt=prompt)
+
+    def _call(self, image_url: str, extra_hint: str = "", prompt: str = PROMPT) -> tuple[str, int, int]:
         with genai_span(self.model) as span, model_slot("vlm", self.max_concurrency):
             resp = self.client.chat.completions.create(
                 model=self.model,
@@ -95,7 +99,7 @@ class OpenAICompatibleVLM:
                 max_tokens=1024,
                 messages=[{"role": "user", "content": [
                     {"type": "image_url", "image_url": {"url": image_url}},
-                    {"type": "text", "text": PROMPT + extra_hint},
+                    {"type": "text", "text": prompt + extra_hint},
                 ]}],
             )
             usage = resp.usage

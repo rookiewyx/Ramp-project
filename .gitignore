@@ -26,3 +26,6 @@ data/objects/
 
 # 评测报告（含逐张预测结果）
 reports/
+
+# SCID 数据集（非商业许可，不进仓库）
+SCID/

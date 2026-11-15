@@ -33,12 +33,12 @@ def code_hash() -> str:
 def prompt_hash() -> str:
     from .. import pii
     from ..agent import investigator, tools
-    from ..extraction import vlm
+    from ..extraction import tickets, vlm
     from ..policy import semantic
 
     # 脱敏会改变发给模型的文字，也算进提示词哈希；调查 Agent 的系统提示词、报销单描述、工具说明也算
     text = (inspect.getsource(semantic.system_prompt) + inspect.getsource(semantic.build_prompt)
-            + inspect.getsource(semantic.masked_request) + inspect.getsource(pii) + vlm.PROMPT
+            + inspect.getsource(semantic.masked_request) + inspect.getsource(pii) + vlm.PROMPT + tickets.PROMPT
             + investigator.SYSTEM + inspect.getsource(investigator.user_message)
             + json.dumps(tools.SPECS, ensure_ascii=False, sort_keys=True))
     return _sha(text.encode())

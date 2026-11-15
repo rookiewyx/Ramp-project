@@ -110,6 +110,15 @@ def import_extraction(s: Session, path: Path, name: str, description: str = "") 
     return v
 
 
+def import_samples(s: Session, path: Path, name: str, description: str = "") -> DatasetVersion:
+    """导入已经整理好的识别样本（每行 {id, path, kind, schema, gt}），例如 scripts/build_scid_evalset.py 的输出。"""
+    v = _new_version(s, name, "extraction", _rel(path), description)
+    for smp in _read_jsonl(path):
+        s.add(Case(version=v, key=smp["id"], payload=smp, tags={"kind": smp["kind"]}))
+    s.flush()
+    return v
+
+
 # ---------------- 冻结 / 派生 ----------------
 def content_hash(v: DatasetVersion) -> str:
     h = hashlib.sha256()

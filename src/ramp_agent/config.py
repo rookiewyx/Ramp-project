@@ -33,11 +33,11 @@ class Settings(BaseSettings):
     evalhub_url: str = "sqlite:///data/evalhub.db"
 
     # 存储
-    mysql_url: str = "mysql+pymysql://ramp:ramp_dev_pw@127.0.0.1:3306/ramp?charset=utf8mb4"
     redis_url: str = "redis://127.0.0.1:6379/0"
 
     # ---------------- 审核服务（模块三） ----------------
-    # 业务库：默认 SQLite 方便本地跑；docker compose 起了 MySQL 后改成 MYSQL_URL 的值
+    # 业务库：默认 SQLite 方便本地跑；docker compose 起了 MySQL 后可改成
+    # mysql+pymysql://ramp:ramp_dev_pw@127.0.0.1:3306/ramp?charset=utf8mb4
     database_url: str = "sqlite:///data/ramp.db"
     # 启动时自动把数据库升级到最新结构。本地开发方便；部署时设为 false，由单独的 migrate 步骤执行
     auto_migrate: bool = True
@@ -78,7 +78,6 @@ class Settings(BaseSettings):
     agent_reply_timeout_h: int = 72        # 追问员工后多久没答复就不再等，交给财务
 
     # 公司主体信息（用于校验发票抬头，与 policies/expense_policy.md 一致）
-    company_name: str = "星河数智科技有限公司"
     company_tax_id: str = "91310000MA1XHSZ00X"
 
 

@@ -104,6 +104,8 @@ def cmd_import(a) -> None:
         if a.task == "policy":
             v = dsm.import_policy(s, _path(a.file), a.dataset, labeler=a.labeler,
                                   with_labels=not a.no_labels, description=a.description)
+        elif a.task == "samples":
+            v = dsm.import_samples(s, _path(a.file), a.dataset, description=a.description)
         else:
             v = dsm.import_extraction(s, _path(a.file), a.dataset, description=a.description)
         s.commit()
@@ -232,6 +234,15 @@ def _show(run: Run, limit: int = 15) -> None:
         lo, hi = m["doc_accuracy_ci95"] or (0, 0)
         print(f"整张全对 {m['doc_accuracy']}（95% 区间 {lo:.1%}–{hi:.1%}）  静默错误 {m['silent_errors']}  "
               f"标记复核 {m['flagged']}  路径 {m['tiers']}  模型调用 {m['model_calls']}  tokens {m['tokens']}")
+        if "fields" in m:
+            print(f"字段准确率 {m['field_accuracy']:.1%}  读错且未标记的字段占 {m['silent_field_rate']:.1%}  "
+                  f"票种判断 {m['type_accuracy']:.1%}  平均耗时 {m['avg_latency_ms']:.0f} ms")
+            print("\n| 票种 | 张数 | 整张全对 | 有静默错误 | 票种判断 |\n|---|---|---|---|---|")
+            for k, g in m["groups"].items():
+                print(f"| {k} | {g['n']} | {g['accuracy']:.1%} | {g['silent']} | {g['type_accuracy']:.0%} |")
+            print("\n| 字段 | 个数 | 准确率 | 读错且未标记 |\n|---|---|---|---|")
+            for k, g in m["fields"].items():
+                print(f"| {k} | {g['n']} | {g['accuracy']:.1%} | {g['silent']} |")
     wrong = [r for r in run.results if r.correct is False]
     if wrong:
         print(f"\n判错 {len(wrong)} 条（最多显示 {limit} 条）：")
@@ -352,7 +363,8 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("import", help="导入 jsonl 为评测集的新版本（草稿）")
     p.add_argument("file")
     p.add_argument("--dataset", required=True)
-    p.add_argument("--task", choices=["policy", "extraction"], default="policy")
+    p.add_argument("--task", choices=["policy", "extraction", "samples"], default="policy",
+                   help="samples：已整理好的识别样本（如 SCID 真实票据），按识别任务评测")
     p.add_argument("--labeler", default="generator", help="记录里 expected 字段的标注人名")
     p.add_argument("--no-labels", action="store_true", help="不导入 expected，留给人工标注")
     p.add_argument("--freeze", action="store_true", help="导入后直接冻结")
