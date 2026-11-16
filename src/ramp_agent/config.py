@@ -24,6 +24,9 @@ class Settings(BaseSettings):
     vlm_api_key: str = "EMPTY"
     vlm_model: str = "Qwen/Qwen3-VL-2B-Instruct"
     ticket_prompt: str = "v3"              # 交通票据识别的版本（extraction/tickets.py）：v1 基线，v2 新提示词，v3 再加出租车票复读
+    # 额外的请求参数（JSON），原样放进 extra_body。自部署 Qwen3.5 要关掉思考模式：
+    # VLM_EXTRA_BODY={"chat_template_kwargs": {"enable_thinking": false}}
+    vlm_extra_body: str = ""
     vlm_timeout_s: float = 60.0
     vlm_max_retries: int = 2
     # 每个进程同时在途的模型请求上限，按模型服务的并发配额设置；0 表示不限制（见 limits.py）

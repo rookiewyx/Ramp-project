@@ -26,6 +26,7 @@ import re
 import sys
 import zipfile
 from collections import Counter, defaultdict
+from contextlib import contextmanager
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -83,6 +84,34 @@ def normalize(gt: dict) -> tuple[dict, list[str]]:
     return out, skipped
 
 
+@contextmanager
+def _from_zip(path: Path):
+    with zipfile.ZipFile(path) as z:
+        members = {Path(n).name: n for n in z.namelist() if not n.endswith("/")}
+        yield members, lambda key: z.read(members[key])
+
+
+@contextmanager
+def _from_dir(path: Path):
+    members = {p.name: p for p in path.rglob("*") if p.suffix.lower() in (".jpg", ".jpeg", ".png")}
+    yield members, lambda key: members[key].read_bytes()
+
+
+def image_source(src: Path):
+    """图片从哪里读：zip 图片包，或者解压好的文件夹（testB 是 rar，解压出来就行，不用再打包）。"""
+    for p in sorted(src.glob("*.zip")):
+        with open(p, "rb") as f:
+            if f.read(4) == b"PK\x03\x04":
+                return _from_zip(p)
+        print(f"{p.name} 不是 zip 格式（可能是 rar 改了扩展名），跳过")
+    dirs = [d for d in src.iterdir() if d.is_dir() and next(d.rglob("*.jpg"), None)]
+    if dirs:
+        print(f"从解压好的文件夹读图片：{dirs[0].relative_to(ROOT)}")
+        return _from_dir(dirs[0])
+    sys.exit(f"{src} 里既没有 zip 图片包，也没有解压好的图片文件夹。"
+             f"testB 是 rar：用 7-Zip 选“解压到当前文件夹”，解压到 {src} 下面即可")
+
+
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--split", default="testA", choices=["train", "testA", "testB"])
@@ -95,9 +124,7 @@ def main() -> None:
     src = ROOT / "SCID" / a.split
     gts = json.loads((src / "gt.json").read_text(encoding="utf-8"))
     ocr = json.loads((src / "ocr.json").read_text(encoding="utf-8"))
-    archive = next((p for p in src.glob("*.zip")), None)
-    if archive is None:
-        sys.exit(f"{src} 里没有 .zip 图片包。testB 是 .rar，请先用 7-Zip 解压后重新打成 zip，或改用 testA")
+    read = image_source(src)
 
     by_kind: dict[str, list[str]] = defaultdict(list)
     for key in sorted(gts):
@@ -113,8 +140,7 @@ def main() -> None:
     (out_dir / "images").mkdir(parents=True, exist_ok=True)
 
     samples, skipped_n = [], Counter()
-    with zipfile.ZipFile(archive) as z:
-        members = {Path(n).name: n for n in z.namelist() if not n.endswith("/")}
+    with read as (members, load):
         for kind, n in quota.items():
             picked = 0
             for key in rng.sample(by_kind[kind], len(by_kind[kind])):
@@ -123,7 +149,7 @@ def main() -> None:
                 gt, skipped = normalize(gts[key])
                 if not gt or key not in members or Path(key).stem in used:   # 没有可计分字段的、已经用过的不要
                     continue
-                (out_dir / "images" / key).write_bytes(z.read(members[key]))
+                (out_dir / "images" / key).write_bytes(load(key))
                 samples.append({"id": Path(key).stem, "path": f"SCID/eval/{out_dir.name}/images/{key}",
                                 "kind": kind, "schema": "ticket", "gt": gt, "gt_raw": gts[key],
                                 "skipped": skipped})

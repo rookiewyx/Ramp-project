@@ -299,6 +299,22 @@ PROMPT_V3 = PROMPT_V2.replace(
     "- entry: 入口收费站的站名；exit: 出口收费站的站名。“客1”“货2”这类是车型，不是站名；票面上没有印站名就填 null")
 PROMPTS["v3"] = PROMPT_V3
 
+# 微调模型用的提示词（scripts/build_scid_sft.py 生成训练数据时用的就是这一句）。
+# 字段含义、哪里容易混、看不清怎么办，都已经通过训练数据教给模型了，提示词只需要说清输出格式。
+# 每类票据输出哪些字段（TYPE_FIELDS）和训练数据一致；看不清的字段输出 null。
+TYPE_FIELDS = {
+    "taxi": ["invoice_code", "invoice_no", "date", "amount"],
+    "train": ["origin", "destination", "seat_class", "date", "amount"],
+    "coach": ["origin", "destination", "date", "amount"],
+    "flight": ["origin", "destination", "date", "amount", "insurance"],
+    "toll": ["invoice_code", "invoice_no", "entry", "exit", "amount"],
+    "quota": ["invoice_code", "invoice_no", "amount"],
+}
+PROMPT_FT = ("识别这张票据，只输出一个 JSON 对象：doc_type 取 taxi / train / coach / flight / toll / quota，"
+             "再按票种给出字段——" + "；".join(f"{k}: {', '.join(v)}" for k, v in TYPE_FIELDS.items())
+             + "。日期写成 YYYY-MM-DD，金额写数字。看不清的字段填 null。")
+PROMPTS["ft"] = PROMPT_FT
+
 
 def _ask(vlm, image: bytes, prompt: str) -> tuple[dict, int, int, int]:
     out, pt, ct = vlm.ask(image, prompt)
@@ -314,7 +330,8 @@ def _ask(vlm, image: bytes, prompt: str) -> tuple[dict, int, int, int]:
 
 def extract_ticket(vlm, image: bytes, version: str | None = None) -> TicketResult:
     """vlm：有 ask(image, prompt) -> (文本, 输入 tokens, 输出 tokens) 的视觉模型（OpenAICompatibleVLM）。
-    version：提示词版本，默认取配置 TICKET_PROMPT（v1 最初的基线，v2 分开两个日期 + 金额核对，v3 再加出租车票复读）。"""
+    version：提示词版本，默认取配置 TICKET_PROMPT（v1 最初的基线，v2 分开两个日期 + 金额核对，v3 再加出租车票复读，
+    ft 是微调模型用的短提示词）。"""
     from ..config import get_settings
 
     version = version or get_settings().ticket_prompt

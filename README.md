@@ -84,6 +84,8 @@ docker compose up -d
 
 之后在 train 抽的调试集上改了两版（机票分开航班日期和填开日期；出租车票读两遍，对不上的标为可疑），再从 testA 新抽 600 张没用过的验证：**有静默错误的票从 13.5% 降到 7.8%，不计保险费的整张全对从 83.2% 升到 88.8%，机票 64% → 91%**。按原口径整张全对反而从 81.2% 降到 76.3%，原因是我在提示词里让模型把印着 XXX 的保险费留空，而 testA 把它标成 0；这个错误在调试集上看不出来（train 的标法不同），按规矩这一轮不改，留到下一轮修。
 
+下一步是用 SCID 训练集微调开源小模型（Qwen3.5-4B），在没用过的 testB 上和接口对比准确率、静默错误、成本和耗时。数据转换在 `scripts/build_scid_sft.py`，租 GPU 后的步骤在 [`train/README.md`](train/README.md)。
+
 ```powershell
 .venv\Scripts\python scripts\build_scid_evalset.py
 .venv\Scripts\python -m ramp_agent.evalhub import SCID/eval/testA_600/samples.jsonl --dataset scid-testA --task samples --freeze

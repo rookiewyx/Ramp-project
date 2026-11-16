@@ -79,6 +79,7 @@ def to_fields(raw: dict) -> InvoiceFields:
 
 class OpenAICompatibleVLM:
     max_concurrency: int = 0
+    extra_body: dict | None = None
     def __init__(self, settings: Settings | None = None):
         s = settings or get_settings()
         self.model = s.vlm_model
@@ -86,6 +87,7 @@ class OpenAICompatibleVLM:
         self.client = OpenAI(base_url=s.vlm_base_url, api_key=s.vlm_api_key or "EMPTY",
                              timeout=s.vlm_timeout_s, max_retries=s.vlm_max_retries)
         self.max_concurrency = s.vlm_max_concurrency
+        self.extra_body = json.loads(s.vlm_extra_body) if s.vlm_extra_body else None
 
     def ask(self, image: bytes, prompt: str) -> tuple[str, int, int]:
         """用自定义提示词问一张图（交通票据识别用，见 tickets.py）。返回 (文本, 输入 tokens, 输出 tokens)。"""
@@ -101,6 +103,7 @@ class OpenAICompatibleVLM:
                     {"type": "image_url", "image_url": {"url": image_url}},
                     {"type": "text", "text": prompt + extra_hint},
                 ]}],
+                **({"extra_body": self.extra_body} if self.extra_body else {}),
             )
             usage = resp.usage
             pt = getattr(usage, "prompt_tokens", 0) or 0
