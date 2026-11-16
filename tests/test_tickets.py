@@ -70,7 +70,15 @@ def _jpg(tmp_path):
     return p
 
 
-def test_extract_retries_bad_json_and_scores_silent_vs_missing(tmp_path):
+@pytest.fixture
+def v2(monkeypatch):
+    """默认版本 v3 会把出租车票读两遍；只测单遍逻辑的用例固定在 v2。"""
+    from ramp_agent.config import get_settings
+
+    monkeypatch.setattr(get_settings(), "ticket_prompt", "v2")
+
+
+def test_extract_retries_bad_json_and_scores_silent_vs_missing(tmp_path, v2):
     good = json.dumps({"doc_type": "taxi", "invoice_code": "150001993910", "invoice_no": "20698188",
                        "date": "2021年03月05日", "amount": None})
     r = extract_ticket(FakeVLM("我看不清", good), b"x")
@@ -95,3 +103,50 @@ def test_model_failure_is_reported_not_scored(tmp_path):
     out = run_ticket({"id": "a", "path": str(_jpg(tmp_path)), "kind": "taxi", "schema": "ticket",
                       "gt": {"amount": 1.0}}, Broken())
     assert out["tier"] == "failed" and out["wrong_fields"] == []
+
+
+def test_taxi_amount_is_cross_checked_against_price_and_distance():
+    """褪色的出租车票：模型把里程 22.3 当成了金额（真实票据基线里的错例）。"""
+    from ramp_agent.extraction.tickets import taxi_amount_suspicious
+
+    base = dict(doc_type="taxi", invoice_code="131002160106", invoice_no="00726760", date="2021-05-07")
+    assert "里程" in taxi_amount_suspicious(TicketFields(**base, amount=22.3, unit_price=3.8, distance_km=22.3))
+    assert "一半" in taxi_amount_suspicious(TicketFields(**base, amount=10.0, unit_price=2.5, distance_km=44.0))
+    assert taxi_amount_suspicious(TicketFields(**base, amount=86.0, unit_price=3.8, distance_km=22.3)) == ""
+    assert taxi_amount_suspicious(TicketFields(**base, amount=14.0, unit_price=2.4, distance_km=1.2)) == ""  # 起步价
+    assert taxi_amount_suspicious(TicketFields(**base, amount=52.0)) == ""                                # 没读到单价里程
+    assert check(TicketFields(**base, amount=22.3, unit_price=3.8, distance_km=22.3)) == ["amount"]
+
+
+def test_prompt_version_is_selectable_and_flight_dates_are_separated():
+    from ramp_agent.extraction.tickets import PROMPTS
+
+    assert "填开日期" in PROMPTS["v2"] and "填开日期" not in PROMPTS["v1"]
+    v2 = json.dumps({"doc_type": "flight", "date": "2021-05-07", "issue_date": "2021-05-21", "amount": 500,
+                     "origin": "T3杭州-萧山", "destination": "天津-滨海", "insurance": None})
+    vlm = FakeVLM(v2)
+    r = extract_ticket(vlm, b"x", version="v2")
+    assert r.fields.date == "2021-05-07" and r.fields.issue_date == "2021-05-21" and r.uncertain_fields == []
+
+
+def test_v3_reads_taxi_twice_and_flags_disagreement(tmp_path):
+    """褪色的出租车票：两遍读出来的金额不一样，至少有一遍是错的，标为可疑。其他票种只读一遍。"""
+    img = _jpg(tmp_path).read_bytes()
+    first = {"doc_type": "taxi", "invoice_code": "131002160106", "invoice_no": "00726760", "date": "2021-05-07",
+             "amount": 22.3}
+    r = extract_ticket(FakeVLM(json.dumps(first), json.dumps({**first, "amount": 86.0})), img, version="v3")
+    assert r.model_calls == 2 and r.uncertain_fields == ["amount"] and r.fields.amount == 22.3
+    r = extract_ticket(FakeVLM(json.dumps(first), json.dumps(first)), img, version="v3")
+    assert r.model_calls == 2 and r.uncertain_fields == []
+    train = json.dumps({"doc_type": "train", "origin": "万州北", "destination": "重庆北", "date": "2021-04-02",
+                        "amount": 98.0, "seat_class": "二等座"})
+    assert extract_ticket(FakeVLM(train), img, version="v3").model_calls == 1
+    assert extract_ticket(FakeVLM(json.dumps(first)), img, version="v2").model_calls == 1
+
+
+def test_vehicle_class_is_not_a_toll_station():
+    from ramp_agent.extraction.tickets import to_ticket
+
+    f = to_ticket({"doc_type": "toll", "entry": "浙江余杭站", "exit": "客1", "amount": 30})
+    assert f.entry == "浙江余杭站" and f.exit is None
+    assert to_ticket({"doc_type": "toll", "exit": "1036"}).exit is None

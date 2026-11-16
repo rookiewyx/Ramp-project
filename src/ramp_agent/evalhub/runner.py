@@ -38,7 +38,7 @@ def prompt_hash() -> str:
 
     # 脱敏会改变发给模型的文字，也算进提示词哈希；调查 Agent 的系统提示词、报销单描述、工具说明也算
     text = (inspect.getsource(semantic.system_prompt) + inspect.getsource(semantic.build_prompt)
-            + inspect.getsource(semantic.masked_request) + inspect.getsource(pii) + vlm.PROMPT + tickets.PROMPT
+            + inspect.getsource(semantic.masked_request) + inspect.getsource(pii) + vlm.PROMPT + tickets.PROMPTS[get_settings().ticket_prompt]
             + investigator.SYSTEM + inspect.getsource(investigator.user_message)
             + json.dumps(tools.SPECS, ensure_ascii=False, sort_keys=True))
     return _sha(text.encode())
@@ -129,7 +129,8 @@ def run_extraction_eval(s: Session, v: DatasetVersion, *, vlm=None, note: str = 
 
     settings = get_settings()
     run = _start(s, v, "extraction", note, "payload",
-                 params={"force_vlm": force_vlm, "vlm": vlm is not None, "workers": workers},
+                 params={"force_vlm": force_vlm, "vlm": vlm is not None, "workers": workers,
+                         "ticket_prompt": settings.ticket_prompt},
                  models={"vlm": settings.vlm_model if vlm is not None else None})
     cases = list(v.cases)
     t0 = time.perf_counter()

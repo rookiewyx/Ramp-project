@@ -88,6 +88,8 @@ def main() -> None:
     ap.add_argument("--split", default="testA", choices=["train", "testA", "testB"])
     ap.add_argument("--seed", type=int, default=20261115)
     ap.add_argument("--scale", type=float, default=1.0, help="每类张数的倍数，如 0.1 只抽 60 张试跑")
+    ap.add_argument("--exclude", nargs="*", default=[], help="已有的 samples.jsonl，里面的票不再抽（抽新的验证集用）")
+    ap.add_argument("--name", default="", help="输出目录名的后缀，如 v2 → SCID/eval/testA_600_v2")
     a = ap.parse_args()
 
     src = ROOT / "SCID" / a.split
@@ -106,7 +108,8 @@ def main() -> None:
     rng = random.Random(a.seed)
     quota = {k: max(1, round(n * a.scale)) for k, n in QUOTA.items()}
     total = sum(quota.values())
-    out_dir = ROOT / "SCID" / "eval" / f"{a.split}_{total}"
+    out_dir = ROOT / "SCID" / "eval" / (f"{a.split}_{total}" + (f"_{a.name}" if a.name else ""))
+    used = {json.loads(line)["id"] for p in a.exclude for line in (ROOT / p).read_text(encoding="utf-8").splitlines()}
     (out_dir / "images").mkdir(parents=True, exist_ok=True)
 
     samples, skipped_n = [], Counter()
@@ -118,7 +121,7 @@ def main() -> None:
                 if picked >= n:
                     break
                 gt, skipped = normalize(gts[key])
-                if not gt or key not in members:          # 没有任何可计分字段的票不要
+                if not gt or key not in members or Path(key).stem in used:   # 没有可计分字段的、已经用过的不要
                     continue
                 (out_dir / "images" / key).write_bytes(z.read(members[key]))
                 samples.append({"id": Path(key).stem, "path": f"SCID/eval/{out_dir.name}/images/{key}",
