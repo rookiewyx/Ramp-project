@@ -1,7 +1,9 @@
 """调查 Agent 能查的公司系统，以及向员工追问的通道。
 
-真实部署里这些是对接 OA（出差申请、预审批）、税务发票查验平台、工商登记查询的 HTTP 接口；
-这里先定接口，用一份 JSON 数据实现（评测时每条用例自带一份，服务里从 ENTERPRISE_FIXTURE 文件读）。
+真实部署里这些是对接 OA（出差申请、预审批）、税务发票查验平台、工商登记查询的接口；
+这里先定接口，两种实现：
+  - FixtureSystems：一份 JSON 数据（评测时每条用例自带一份，服务里从 ENTERPRISE_FIXTURE 文件读）；
+  - MCPSystems（mcp_systems.py）：通过 MCP 协议连公司系统的 MCP server（mcp_server.py），服务里设 ENTERPRISE_MCP。
 
 最小权限：查询接口按员工过滤，Agent 只能看到提交这笔报销的员工本人的记录，
 工具也不接受员工编号参数（见 tools.py），模型没办法去查别人的数据。
@@ -16,6 +18,10 @@ from pathlib import Path
 from typing import Protocol
 
 from ..policy.config import same_name
+
+
+class SystemsError(RuntimeError):
+    """公司系统暂时不可用（超时、连接断开、接口报错）。工具把它作为错误返回给模型，不中断整个调查。"""
 
 
 class EnterpriseSystems(Protocol):

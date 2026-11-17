@@ -3,7 +3,7 @@
 from .baseline import ScriptedPlanner
 from .investigator import InvestigationResult, Investigator
 from .plan import Plan, make_plan
-from .systems import AsyncEmployee, AwaitingEmployee, FixtureSystems, ScriptedEmployee
+from .systems import AsyncEmployee, AwaitingEmployee, FixtureSystems, ScriptedEmployee, SystemsError
 
 __all__ = ["AsyncEmployee", "AwaitingEmployee", "FixtureSystems", "InvestigationResult", "Investigator",
-           "Plan", "ScriptedEmployee", "ScriptedPlanner", "make_plan"]
+           "Plan", "ScriptedEmployee", "ScriptedPlanner", "SystemsError", "make_plan"]

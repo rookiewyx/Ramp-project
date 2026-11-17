@@ -74,7 +74,7 @@ def _start(s: Session, v: DatasetVersion, task: str, note: str, gold: str, param
 
 def run_policy_eval(s: Session, v: DatasetVersion, *, judge=None, note: str = "", gold: str = "auto",
                     extraction_run: int | None = None, extraction_report: Path | None = None,
-                    workers: int = 4, agent=None) -> Run:
+                    workers: int = 4, agent=None, systems: str = "fixture") -> Run:
     """agent：调查 Agent（Investigator），给了就在初审之后做调查，结论按调查后的算，另外记录调查前后对比。"""
     from .adapters.policy import agent_metrics, policy_metrics, run_policy
 
@@ -96,13 +96,13 @@ def run_policy_eval(s: Session, v: DatasetVersion, *, judge=None, note: str = ""
     settings = get_settings()
     run = _start(s, v, "policy", note, gold,
                  params={"invoice_fields": source, "llm": judge is not None, "workers": workers,
-                         **({"agent": agent.model, "agent_max_steps": agent.max_steps} if agent else {})},
+                         **({"agent": agent.model, "agent_max_steps": agent.max_steps, "systems": systems} if agent else {})},
                  models={"llm": settings.llm_model if judge is not None else None,
                          **({"agent": agent.model} if agent else {})})
     cases = list(v.cases)
     t0 = time.perf_counter()
     outputs = run_policy([c.payload for c in cases], judge=judge, extraction_lookup=lookup,
-                         workers=workers, agent=agent)
+                         workers=workers, agent=agent, systems=systems)
     run.wall_seconds = round(time.perf_counter() - t0, 2)
 
     items = []

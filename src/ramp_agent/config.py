@@ -79,6 +79,10 @@ class Settings(BaseSettings):
     # 公司系统（出差申请、预审批、发票查验、商户登记）的数据。真实部署换成对接 OA / 税务查验的接口；
     # 这里用 JSON 文件模拟，留空表示没有对接，Agent 只能追问员工
     enterprise_fixture: str = ""
+    # 通过 MCP 连公司系统（设了就不用上面的 JSON）：http(s):// 开头是 Streamable HTTP 地址，
+    # 否则是启动 stdio server 的命令行，例如 "python -m ramp_agent.agent.mcp_server --fixture evalsets/enterprise_demo.json"
+    enterprise_mcp: str = ""
+    enterprise_mcp_timeout_s: float = 15.0
     agent_reply_timeout_h: int = 72        # 追问员工后多久没答复就不再等，交给财务
 
     # 公司主体信息（用于校验发票抬头，与 policies/expense_policy.md 一致）

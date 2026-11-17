@@ -80,10 +80,15 @@ def deps() -> Deps:
     if judge is None:
         logger.warning("未配置 LLM_API_KEY：需要语义判断的条款会转人工")
     investigator = Investigator.from_settings(s) if (s.llm_api_key and s.agent_enabled) else None
-    fixture = s.enterprise_fixture
-    if fixture and not Path(fixture).is_absolute():
-        fixture = str(ROOT / fixture)
-    systems = FixtureSystems.from_file(fixture)
+    if s.enterprise_mcp:
+        from ..agent.mcp_systems import MCPSystems
+
+        systems = MCPSystems.from_spec(s.enterprise_mcp, timeout=s.enterprise_mcp_timeout_s)   # 第一次调用时才连
+    else:
+        fixture = s.enterprise_fixture
+        if fixture and not Path(fixture).is_absolute():
+            fixture = str(ROOT / fixture)
+        systems = FixtureSystems.from_file(fixture)
     versions = {"code": code_hash()[:12], "prompt": prompt_hash()[:12], "policy": policy_hash()[:12],
                 "llm": judge.model if judge else None, "vlm": vlm.model if vlm else None,
                 "agent": investigator.model if investigator else None}

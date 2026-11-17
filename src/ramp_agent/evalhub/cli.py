@@ -199,7 +199,7 @@ def cmd_run(a) -> None:
             run = run_policy_eval(s, v, judge=judge, note=a.note, gold=a.gold,
                                   extraction_run=a.extraction_run,
                                   extraction_report=_path(a.extraction_report) if a.extraction_report else None,
-                                  workers=a.workers, agent=connect_agent(a.agent))
+                                  workers=a.workers, agent=connect_agent(a.agent), systems=a.systems)
         else:
             vlm = None if a.no_vlm else connect_vlm()
             if a.force_vlm and vlm is None:
@@ -398,6 +398,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--workers", type=int, default=4)
     p.add_argument("--agent", choices=["llm", "scripted"],
                    help="初审之后再做调查：llm 调查 Agent；scripted 写死流程的对照组")
+    p.add_argument("--systems", choices=["fixture", "mcp"], default="fixture",
+                   help="调查时公司系统怎么接：fixture 直接读用例数据；mcp 每条用例起一个 MCP server，经 MCP 协议查询")
     p.add_argument("--limit", type=int, default=15)
     p.set_defaults(func=cmd_run)
 

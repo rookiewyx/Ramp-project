@@ -5,9 +5,11 @@
 
 from __future__ import annotations
 
+import json
 from collections import Counter, defaultdict
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
 
 from ...extraction import InvoiceExtractor, InvoiceFields, LineItem
 from ...policy import Claim, PolicyReviewer, Review, SemanticJudge
@@ -51,11 +53,14 @@ def review_output(rv: Review) -> dict:
 
 def run_policy(records: list[dict], *, judge: SemanticJudge | None,
                extraction_lookup: Callable[[str], dict | None] | None = None,
-               workers: int = 4, agent=None) -> list[dict]:
+               workers: int = 4, agent=None, systems: str = "fixture") -> list[dict]:
     """按顺序审核一批报销（查重依赖顺序）。大模型调用先并发做完，规则部分再逐笔执行。
 
     agent：调查 Agent（agent.Investigator）。给了就对初审结果做调查，公司系统数据和员工答复取自记录里的
-    world、employee_reply；输出里 decision 是调查后的结论，decision_before 是初审结论。"""
+    world、employee_reply；输出里 decision 是调查后的结论，decision_before 是初审结论。
+
+    systems：公司系统怎么接。fixture 直接读用例里的 world；mcp 把 world 写成临时文件，每条用例起一个
+    公司系统 MCP server（stdio 子进程），调查 Agent 通过 MCP 查询。两种方式结论应该逐条一致。"""
     validator = InvoiceExtractor(None)
     claims = []
     for r in records:
@@ -77,8 +82,19 @@ def run_policy(records: list[dict], *, judge: SemanticJudge | None,
 
     def investigate(i: int):
         r = records[i]
-        return agent.run(claims[i], reviews[i], reviewer, FixtureSystems(r.get("world")),
-                         ScriptedEmployee(r.get("employee_reply")), sems[i])
+        if systems != "mcp":
+            return agent.run(claims[i], reviews[i], reviewer, FixtureSystems(r.get("world")),
+                             ScriptedEmployee(r.get("employee_reply")), sems[i])
+        import tempfile
+
+        from ...agent.mcp_systems import MCPSystems
+
+        with tempfile.TemporaryDirectory() as tmp:
+            world = Path(tmp) / "world.json"
+            world.write_text(json.dumps(r.get("world") or {}, ensure_ascii=False), encoding="utf-8")
+            with MCPSystems.for_fixture(world) as sys_:
+                return agent.run(claims[i], reviews[i], reviewer, sys_,
+                                 ScriptedEmployee(r.get("employee_reply")), sems[i])
 
     with ThreadPoolExecutor(max_workers=workers) as pool:
         found = list(pool.map(investigate, range(len(records))))

@@ -660,3 +660,32 @@ SCID testB 分层抽 600 张（之前谁都没碰过），qwen3-vl-plus + v3：
 3. **次要指标**：分票种准确率、字段准确率、标为可疑的票数（多出来的人工）、每张票的成本和耗时。
 4. **四组**：接口 v3（#43，已有）、Qwen3.5-4B 不微调（v2 提示词）、Qwen3.5-4B 微调（ft 提示词）、可选 Qwen3.5-2B 微调。微调组每组只跑一次。
 5. **调参只看训练时的 eval_loss**（验证集来自 train），不看 testB。
+
+## 2026-11-17 公司系统改为可经 MCP 接入
+
+### 为什么做
+
+调查 Agent 查的四个公司系统（出差申请、预审批、发票查验、工商登记）原来是进程内的一个接口，用 JSON 模拟。真实企业里这些系统归不同团队维护，用 MCP 各自暴露成 server，审核 Agent、财务助手、桌面客户端都能复用，不用每接一个 Agent 写一遍对接。这一步不为提高准确率，为的是接入方式接近真实部署，并且验证“换了接入方式，结论不变”。
+
+### 改了什么
+
+- `agent/mcp_server.py`：公司系统 MCP server，4 个只读工具（`list_travel_requests`、`list_preapprovals`、`verify_invoice`、`lookup_merchant`），stdio 或 Streamable HTTP；
+- `agent/mcp_systems.py`：MCP client，实现原来的 `EnterpriseSystems` 接口，所以调查循环、工具、证据校验一行没改；连上后先核对 4 个工具都在（契约检查）；超时、断开、server 报错转成 `SystemsError`；
+- `agent/tools.py`：公司系统不可用时，这一项作为错误返回给模型，调查继续（原来公司系统不会出错，没有这条路径）；失败的查询允许原样重试，但仍占次数；
+- 服务：`ENTERPRISE_MCP`（HTTP 地址或 stdio 命令行）；评测：`evalhub run ... --systems mcp`，每条用例起一个 stdio server。
+
+**模型看到的工具没有变。** MCP server 的工具要员工编号（它是系统接口，调用方是审核服务）；给模型的仍是 `tools.py` 那一套：没有员工编号参数、有次数上限、结果记台账。server 的工具描述也不进提示词。MCP 只是连接和发现工具的协议，最小权限、防编造、证据校验都留在 harness 这一侧。
+
+### 验证
+
+- 单元测试 9 个（`tests/test_agent_mcp.py`）：MCP 返回和 JSON 实现逐项一致；工具只读；经 MCP 仍只看得到本人记录；缺工具时契约检查报错；系统不可用变成工具错误、不中断调查；stdio 子进程端到端；
+- 开发集 investigate-dev，写死流程（不调模型）：经 MCP 和直接读数据，24 条的结论和采纳的证据逐条一致；
+- Streamable HTTP 模式手工验证（`enterprise_demo.json`）；
+- 全部测试 173 个通过。
+
+- **调查 Agent 回归（Kin 本地，qwen-plus，#44）**：investigate-dev 加 `--systems mcp`，准确率 100%（24/24），误通过 0、误驳回 0，和直接读数据的 #29 一样全对，所以每条结论都相同。
+
+### 已知局限
+
+- 这个 MCP server 没有调用方鉴权：任何能连上它的客户端都能按员工编号查。生产上要加 OAuth 或 mTLS，按调用方身份限定能查哪些员工，不能只靠 harness 自觉；
+- 评测里每条用例起一个子进程，24 条约 15 秒，只适合评测，服务里用常驻的 HTTP server。

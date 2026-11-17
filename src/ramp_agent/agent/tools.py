@@ -5,7 +5,8 @@
   - 每个工具有调用次数上限（发票查验最多 3 次，追问员工整个调查只能 1 次），超了直接返回错误；
   - 每次返回的记录都记进台账（ledger）。Agent 最后提交证据时只能引用台账里的记录，
     引用没查到过的编号会被拒绝（防止模型编造记录）；
-  - 员工答复和商户登记里的文字原样返回，但标明是数据，不是指令。
+  - 员工答复和商户登记里的文字原样返回，但标明是数据，不是指令；
+  - 公司系统不可用（MCP server 超时、断开）时返回错误给模型，调查继续，不整个放弃。
 """
 
 from __future__ import annotations
@@ -14,7 +15,7 @@ import json
 from dataclasses import dataclass, field
 
 from ..pii import mask
-from .systems import EmployeeChannel, EnterpriseSystems
+from .systems import EmployeeChannel, EnterpriseSystems, SystemsError
 
 _NO_ARGS = {"type": "object", "properties": {}, "required": []}
 
@@ -103,6 +104,15 @@ class ToolBox:
         if n >= LIMITS.get(name, 3):
             return {"error": f"{name} 已达到调用次数上限（{LIMITS.get(name, 3)} 次）"}
         self.counts[name] = n + 1
+        try:
+            return self._run(name, args)
+        except SystemsError as exc:
+            # 公司系统不可用：告诉模型这一项查不了，调查继续；没查到的证据不会被采纳，最坏是转人工。
+            # 这次查询不算“做过”，允许重试（仍占次数，不会无限重试）
+            self.seen.discard(key)
+            return {"error": f"公司系统暂时不可用，这一项没有查到：{exc}"}
+
+    def _run(self, name: str, args: dict) -> dict:
         if name == "search_preapprovals":
             recs = self.systems.preapprovals(self.employee_id)
             return {"records": [self._log("preapproval", r) for r in recs]}
