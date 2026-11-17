@@ -316,6 +316,17 @@ docker compose --profile app up -d --build
 .venv\Scripts\python -m ramp_agent.evalhub run policy --dataset investigate-dev --agent llm --systems mcp --note "调查 Agent，公司系统经 MCP"
 ```
 
+消融实验和稳定性（方案和预期见 `docs/eval_log.md`）：
+
+```powershell
+# 同一配置连续跑 5 次：每次准确率、均值 ± 标准差、pass^5、结论不稳定的用例
+.venv\Scripts\python -m ramp_agent.evalhub run policy --dataset investigate --agent llm --repeat 5 --note "稳定性"
+# 拿掉 harness 的一个部件：trust_model / no_auto_adopt / all_tools / no_limits / model_decides
+.venv\Scripts\python -m ramp_agent.evalhub run policy --dataset investigate --agent llm --ablate model_decides --note "消融"
+# 任意几次运行放在一起算稳定性
+.venv\Scripts\python -m ramp_agent.evalhub stability 47 48 49 50 51
+```
+
 服务里改用 MCP：先起公司系统的 MCP server，再在 `.env` 里设 `ENTERPRISE_MCP`（设了就不再读 `ENTERPRISE_FIXTURE`）：
 
 ```powershell

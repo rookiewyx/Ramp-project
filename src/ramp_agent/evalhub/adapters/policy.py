@@ -104,6 +104,7 @@ def run_policy(records: list[dict], *, judge: SemanticJudge | None,
         if res.review is not None:
             after = review_output(res.review)
             out.update({k: after[k] for k in ("decision", "violated", "uncertain", "explanation", "results")})
+            out["decision"] = res.decision_after          # 平时两者相同；消融 model_decides 时以模型结论为准
         out["llm_calls"] += res.llm_calls
         out["tokens"] += res.tokens
     return outs

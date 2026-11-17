@@ -36,7 +36,7 @@ from ..telemetry import genai_span, record_usage, tracer
 from .evidence import apply_findings
 from .plan import make_plan
 from .systems import AwaitingEmployee, EmployeeChannel, EnterpriseSystems
-from .tools import ToolBox, dumps, tool_specs
+from .tools import SPECS, ToolBox, dumps, tool_specs
 
 SYSTEM = """你是企业报销审核的调查助手。系统初审时，这笔报销有几项需要补充证据才能判断，你的任务是用提供的工具查证据，最后调用 submit_findings 提交。
 
@@ -50,6 +50,24 @@ SYSTEM = """你是企业报销审核的调查助手。系统初审时，这笔�
 7. summary 用一两句话写给财务看，只写事实：查了什么、查到了哪条记录（编号和关键字段）、员工怎么答的、还缺什么。不要判断条款是否满足、理由是否成立、发票是否有效——这些由审核规则判断；没做过的查询不要写。"""
 
 NUDGE = "请调用 submit_findings 结束调查。"
+
+# 消融实验：每个开关拿掉 harness 的一个部件，量它到底贡献了多少。只用于评测，服务里不开
+ABLATIONS = {
+    "trust_model": "不校验证据：模型引用的记录直接采纳（本人、状态、类别、金额上限、有效期、城市、日期都不查）",
+    "no_auto_adopt": "唯一确定的事实（发票查验、商户登记）只在模型引用时才采纳",
+    "all_tools": "不按需授予：每次调查都给全部 5 个工具",
+    "no_limits": "工具不限次数、不拦重复查询（追问员工仍只能一次）",
+    "model_decides": "模型直接给最终结论，规则引擎不再重审",
+}
+
+# model_decides 用：把“你不决定结论”换成“你给出最终结论”，其余规则不变
+SYSTEM_DECIDES = SYSTEM.replace(
+    "1. 你不决定报销是否通过。最终结论由审核规则根据你提交的证据重新计算，你只负责找到相关记录、或向员工问清缺失的事实。",
+    "1. 调查结束时，你在 submit_findings 的 decision 里给出这笔报销的最终结论：approve（待查问题都有证据解决、符合制度）、"
+    "reject（违反制度）或 review（证据不足，交给财务人工审核）。你的结论就是最终结论，不会再经过审核规则复核。",
+).replace("2. submit_findings 只能填工具返回过的记录编号。一条记录是否适用（是否已批准、类别和金额上限、有效期、城市和日期是否覆盖这笔报销），代码会再校验，不符合的会被拒绝，所以挑选时请逐项核对，有多条时选真正适用的那条。",
+          "2. submit_findings 只能填工具返回过的记录编号。一条记录是否适用（是否已批准、类别和金额上限、有效期、城市和日期是否覆盖这笔报销），需要你自己逐项核对，有多条时选真正适用的那条。")
+assert SYSTEM_DECIDES.count("decision") == 1 and "需要你自己逐项核对" in SYSTEM_DECIDES
 
 
 @dataclass
@@ -124,30 +142,39 @@ def user_message(claim: Claim, plan, company=None) -> str:
 
 
 class Investigator:
-    def __init__(self, client, model: str, max_steps: int = 8, max_concurrency: int = 0):
+    def __init__(self, client, model: str, max_steps: int = 8, max_concurrency: int = 0,
+                 ablations: tuple[str, ...] | frozenset[str] = ()):
         self.client = client
         self.model = model
         self.max_steps = max_steps
         self.max_concurrency = max_concurrency
+        unknown = set(ablations) - set(ABLATIONS)
+        if unknown:
+            raise ValueError(f"未知的消融开关 {sorted(unknown)}，可选 {sorted(ABLATIONS)}")
+        self.ablations = frozenset(ablations)
 
     @classmethod
-    def from_settings(cls, settings: Settings | None = None) -> Investigator:
+    def from_settings(cls, settings: Settings | None = None, ablations: tuple[str, ...] = ()) -> Investigator:
         s = settings or get_settings()
         client = OpenAI(base_url=s.llm_base_url, api_key=s.llm_api_key or "EMPTY", timeout=60, max_retries=2)
-        return cls(client, s.llm_model, s.agent_max_steps, s.llm_max_concurrency)
+        return cls(client, s.llm_model, s.agent_max_steps, s.llm_max_concurrency, ablations=ablations)
 
     # ---------------- 对外入口 ----------------
     def run(self, claim: Claim, review: Review, reviewer: PolicyReviewer, systems: EnterpriseSystems,
             employee: EmployeeChannel, sem0: tuple[SemanticResult, int] | None = None) -> InvestigationResult:
         plan = make_plan(claim, review)
+        if "all_tools" in self.ablations and plan.should_run:
+            plan.tools = [n for n in SPECS if n != "submit_findings"]
         res = InvestigationResult(status="skipped", decision_before=review.decision.value,
                                   decision_after=review.decision.value, skip_reason=plan.skip_reason,
                                   open_items=[asdict(i) for i in plan.items], tools_offered=plan.tools)
         if not plan.should_run:
             return res
         box = ToolBox(claim.employee_id, systems, employee, plan.tools,
-                      pii_names=[claim.employee_name] if claim.employee_name else [])
-        messages = [{"role": "system", "content": SYSTEM},
+                      pii_names=[claim.employee_name] if claim.employee_name else [],
+                      limits="no_limits" not in self.ablations)
+        system = SYSTEM_DECIDES if "model_decides" in self.ablations else SYSTEM
+        messages = [{"role": "system", "content": system},
                     {"role": "user", "content": user_message(claim, plan, reviewer.policy.company)}]
         return self._loop(claim, review, reviewer, box, messages, res, sem0, steps_left=self.max_steps)
 
@@ -160,7 +187,7 @@ class Investigator:
                       pii_names=[claim.employee_name] if claim.employee_name else [],
                       ledger={k: (v[0], v[1]) for k, v in state["ledger"].items()},
                       counts=dict(state["counts"]), question=state["question"], asked=True,
-                      seen=set(state.get("seen", [])))
+                      seen=set(state.get("seen", [])), limits="no_limits" not in self.ablations)
         messages = list(state["messages"])
         result = box.answer(reply)
         messages.append({"role": "tool", "tool_call_id": state["pending_call_id"], "content": dumps(result)})
@@ -188,7 +215,8 @@ class Investigator:
     def _loop(self, claim, review, reviewer, box: ToolBox, messages: list[dict], res: InvestigationResult,
               sem0, steps_left: int) -> InvestigationResult:
         t0 = time.perf_counter()
-        tools = tool_specs(box.allowed)
+        decide = "model_decides" in self.ablations
+        tools = tool_specs(box.allowed, decide=decide)
         submitted: dict | None = None
         nudged = False
         with tracer.start_as_current_span("agent.investigate") as span:
@@ -250,7 +278,9 @@ class Investigator:
 
             submitted = submitted or {}
             res.summary = str(submitted.get("summary") or ("调查步数用完，未提交结论" if steps_left <= 0 else ""))[:500]
-            claim2, findings = apply_findings(claim, submitted, box, reviewer.policy)
+            claim2, findings = apply_findings(claim, submitted, box, reviewer.policy,
+                                              validate="trust_model" not in self.ablations,
+                                              auto_adopt="no_auto_adopt" not in self.ablations)
             res.findings = [f.to_dict() for f in findings]
             # 补了证据之后从头再审。语义问题没变（没有新的员工说明和商户信息）就沿用初审的判断
             if sem0 is not None and reviewer._semantic_request(claim2) == reviewer._semantic_request(claim):
@@ -262,6 +292,9 @@ class Investigator:
                 res.completion_tokens += sem[0].completion_tokens
             res.review = reviewer.review(claim2, sem)
             res.decision_after = res.review.decision.value
+            if decide:      # 消融：以模型的结论为准（规则引擎的重审结果只留作对照）
+                d = str(submitted.get("decision") or "")
+                res.decision_after = d if d in ("approve", "review", "reject") else "review"
             res.status = "unresolved" if res.decision_after == "review" else "resolved"
             res.latency_ms += int((time.perf_counter() - t0) * 1000)
             span.set_attribute("agent.status", res.status)

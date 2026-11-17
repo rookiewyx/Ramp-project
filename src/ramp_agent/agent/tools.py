@@ -11,6 +11,7 @@
 
 from __future__ import annotations
 
+import copy
 import json
 from dataclasses import dataclass, field
 
@@ -69,10 +70,20 @@ LIMITS = {"verify_invoice": 3, "ask_employee": 1, "search_preapprovals": 2, "sea
           "lookup_merchant": 3}
 
 
-def tool_specs(names: list[str]) -> list[dict]:
-    """OpenAI 兼容的 tools 参数。submit_findings 总是提供。"""
-    return [{"type": "function", "function": {"name": n, **SPECS[n]}}
-            for n in [*names, "submit_findings"]]
+def tool_specs(names: list[str], decide: bool = False) -> list[dict]:
+    """OpenAI 兼容的 tools 参数。submit_findings 总是提供。
+
+    decide=True 只用于消融实验 model_decides：submit_findings 多一个必填的 decision，由模型直接给结论。"""
+    specs = [{"type": "function", "function": {"name": n, **SPECS[n]}} for n in [*names, "submit_findings"]]
+    if decide:
+        sub = copy.deepcopy(SPECS["submit_findings"])
+        sub["description"] = "结束调查，提交找到的证据，并给出这笔报销的最终结论。只填工具返回过的记录编号。"
+        sub["parameters"]["properties"]["decision"] = {
+            "type": "string", "enum": ["approve", "review", "reject"],
+            "description": "最终结论：approve 通过；reject 驳回；review 证据不足，交给财务人工审核"}
+        sub["parameters"]["required"] = ["decision", "summary"]
+        specs[-1] = {"type": "function", "function": {"name": "submit_findings", **sub}}
+    return specs
 
 
 @dataclass
@@ -90,18 +101,19 @@ class ToolBox:
     reply: str | None = None
     asked: bool = False
     seen: set[str] = field(default_factory=set)       # 做过的查询（工具名 + 参数），重复的直接挡回去
+    limits: bool = True                               # 消融实验 no_limits 关掉：不限次数、不拦重复查询（追问员工仍只能一次）
 
     def call(self, name: str, args: dict) -> dict:
         """执行一次工具调用，返回给模型看的结果。ask_employee 要等待时抛 AwaitingEmployee。"""
         if name not in self.allowed:
             return {"error": f"本次调查没有提供工具 {name}"}
         key = name + dumps({k: args[k] for k in sorted(args)})
-        if name != "ask_employee" and key in self.seen:
+        if self.limits and name != "ask_employee" and key in self.seen:
             # 模型有时会原样重试同一个查询，结果不会变，也不占用次数
             return {"error": "和之前的一次查询参数完全相同，结果不会变。可以换一种可能的写法，或者提交现有结果"}
         self.seen.add(key)
         n = self.counts.get(name, 0)
-        if n >= LIMITS.get(name, 3):
+        if (self.limits or name == "ask_employee") and n >= LIMITS.get(name, 3):
             return {"error": f"{name} 已达到调用次数上限（{LIMITS.get(name, 3)} 次）"}
         self.counts[name] = n + 1
         try:

@@ -28,7 +28,7 @@ from sqlalchemy import select
 
 from ..config import ROOT
 from . import datasets as dsm
-from .compare import compare, format_comparison, gate
+from .compare import compare, format_comparison, format_stability, gate, stability
 from .db import Dataset, Run, session
 
 
@@ -58,15 +58,17 @@ def connect_llm():
     return j if _probe(j.client, "大模型") else None
 
 
-def connect_agent(kind: str | None):
-    """调查 Agent：llm 用 .env 里的文本模型；scripted 是写死流程的对照组，不调模型。"""
+def connect_agent(kind: str | None, ablations: tuple[str, ...] = ()):
+    """调查 Agent：llm 用 .env 里的文本模型；scripted 是写死流程的对照组，不调模型。ablations：消融开关。"""
     from ..agent import Investigator, ScriptedPlanner
 
     if not kind:
+        if ablations:
+            sys.exit("[evalhub] --ablate 要和 --agent 一起用")
         return None
     if kind == "scripted":
-        return Investigator(ScriptedPlanner(), "scripted")
-    a = Investigator.from_settings()
+        return Investigator(ScriptedPlanner(), "scripted", ablations=ablations)
+    a = Investigator.from_settings(ablations=ablations)
     if not _probe(a.client, "大模型（调查 Agent）"):
         sys.exit("[evalhub] --agent llm 需要可用的大模型")
     return a
@@ -192,22 +194,35 @@ def cmd_run(a) -> None:
 
     logger.remove()
     logger.add(sys.stderr, level="WARNING")
-    with session() as s:
-        v = dsm.get_version(s, a.dataset)
-        if a.task == "policy":
-            judge = None if a.no_llm else connect_llm()
-            run = run_policy_eval(s, v, judge=judge, note=a.note, gold=a.gold,
-                                  extraction_run=a.extraction_run,
-                                  extraction_report=_path(a.extraction_report) if a.extraction_report else None,
-                                  workers=a.workers, agent=connect_agent(a.agent), systems=a.systems)
-        else:
-            vlm = None if a.no_vlm else connect_vlm()
-            if a.force_vlm and vlm is None:
-                sys.exit("--force-vlm 需要可用的视觉模型")
-            run = run_extraction_eval(s, v, vlm=vlm, note=a.note, force_vlm=a.force_vlm, workers=a.workers)
-        s.commit()
-        print(f"[evalhub] 运行 #{run.id} 完成，用时 {run.wall_seconds}s")
-        _show(run, a.limit)
+    ablations = tuple(sorted({x.strip() for v in a.ablate for x in v.split(",") if x.strip()}))
+    judge = agent = vlm = None
+    if a.task == "policy":
+        judge = None if a.no_llm else connect_llm()
+        agent = connect_agent(a.agent, ablations)
+    else:
+        vlm = None if a.no_vlm else connect_vlm()
+        if a.force_vlm and vlm is None:
+            sys.exit("--force-vlm 需要可用的视觉模型")
+    ids = []
+    for i in range(a.repeat):
+        note = a.note + (f"（第 {i + 1}/{a.repeat} 次）" if a.repeat > 1 else "")
+        with session() as s:
+            v = dsm.get_version(s, a.dataset)
+            if a.task == "policy":
+                run = run_policy_eval(s, v, judge=judge, note=note, gold=a.gold,
+                                      extraction_run=a.extraction_run,
+                                      extraction_report=_path(a.extraction_report) if a.extraction_report else None,
+                                      workers=a.workers, agent=agent, systems=a.systems)
+            else:
+                run = run_extraction_eval(s, v, vlm=vlm, note=note, force_vlm=a.force_vlm, workers=a.workers)
+            s.commit()
+            print(f"[evalhub] 运行 #{run.id} 完成，用时 {run.wall_seconds}s")
+            ids.append(run.id)
+            if a.repeat == 1:
+                _show(run, a.limit)
+    if a.repeat > 1:
+        with session() as s:
+            print(format_stability(stability([s.get(Run, i) for i in ids]), a.limit))
 
 
 def _show(run: Run, limit: int = 15) -> None:
@@ -291,6 +306,14 @@ def _two_runs(s, a):
     if base is None or new is None:
         sys.exit("运行编号不存在，用 list 查看")
     return compare(base, new)
+
+
+def cmd_stability(a) -> None:
+    with session() as s:
+        runs = [s.get(Run, i) for i in a.runs]
+        if any(r is None for r in runs):
+            sys.exit("运行编号不存在，用 list 查看")
+        print(format_stability(stability(runs), a.limit))
 
 
 def cmd_compare(a) -> None:
@@ -400,8 +423,17 @@ def build_parser() -> argparse.ArgumentParser:
                    help="初审之后再做调查：llm 调查 Agent；scripted 写死流程的对照组")
     p.add_argument("--systems", choices=["fixture", "mcp"], default="fixture",
                    help="调查时公司系统怎么接：fixture 直接读用例数据；mcp 每条用例起一个 MCP server，经 MCP 协议查询")
+    p.add_argument("--ablate", action="append", default=[], metavar="开关",
+                   help="消融实验，拿掉 harness 的一个部件（可重复或用逗号分隔）："
+                        "trust_model、no_auto_adopt、all_tools、no_limits、model_decides")
+    p.add_argument("--repeat", type=int, default=1, help="同样的配置连续跑 N 次，最后给出稳定性统计")
     p.add_argument("--limit", type=int, default=15)
     p.set_defaults(func=cmd_run)
+
+    p = sub.add_parser("stability", help="同一配置多次运行的稳定性：均值 ± 标准差、pass^k、结论不稳定的用例")
+    p.add_argument("runs", type=int, nargs="+")
+    p.add_argument("--limit", type=int, default=20)
+    p.set_defaults(func=cmd_stability)
 
     p = sub.add_parser("show", help="查看一次运行")
     p.add_argument("run", type=int)

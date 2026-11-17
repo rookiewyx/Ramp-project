@@ -104,3 +104,75 @@ def gate(cmp: Comparison, max_broken: int = 0, waive: set[str] | frozenset[str] 
         reasons.append(f"有 {len(broken)} 条用例从对变错（允许 {max_broken} 条）："
                        + "、".join(r["key"] for r in broken))
     return reasons
+
+
+# ---------------- 多次运行的稳定性 ----------------
+def stability_from(rows_per_run: list[dict[str, tuple]]) -> dict:
+    """rows_per_run：每次运行一个 {用例: (是否正确, 系统结论, 标准答案)}。
+
+    Agent 带随机性（即使 temperature=0，接口侧也不保证完全确定），一次运行的准确率可能是运气。这里给出：
+      - 每次的准确率和均值 ± 标准差；
+      - pass^k：k 次都对的用例占比（τ-bench 的口径），衡量“上线后每次都对”；
+      - pass@k：至少对一次的占比，和 pass^k 的差就是不稳定的部分；
+      - 结论不稳定的用例：同一张单子不同次给出不同结论，逐条列出。
+    """
+    import statistics
+
+    k = len(rows_per_run)
+    keys = sorted(set.intersection(*(set(r) for r in rows_per_run))) if rows_per_run else []
+    scored = [key for key in keys if all(r[key][0] is not None for r in rows_per_run)]
+    accs = [sum(bool(r[key][0]) for key in scored) / len(scored) for r in rows_per_run] if scored else []
+    false_approve = [sum(1 for key in scored if r[key][1] == "approve" and r[key][2] not in (None, "approve"))
+                     for r in rows_per_run]
+    unstable = []
+    for key in keys:
+        preds = [r[key][1] for r in rows_per_run]
+        if len(set(preds)) > 1:
+            unstable.append({"key": key, "gold": rows_per_run[0][key][2], "predicted": preds,
+                             "correct": sum(bool(r[key][0]) for r in rows_per_run)})
+    return {
+        "runs": k, "cases": len(keys), "scored": len(scored),
+        "accuracy": [round(a, 4) for a in accs],
+        "mean": round(statistics.mean(accs), 4) if accs else None,
+        "std": round(statistics.stdev(accs), 4) if len(accs) > 1 else 0.0,
+        "pass_all": round(sum(all(r[key][0] for r in rows_per_run) for key in scored) / len(scored), 4)
+        if scored else None,
+        "pass_any": round(sum(any(r[key][0] for r in rows_per_run) for key in scored) / len(scored), 4)
+        if scored else None,
+        "false_approve": false_approve,
+        "unstable": unstable,
+    }
+
+
+def stability(runs: list[Run]) -> dict:
+    if not runs:
+        raise EvalHubError("至少要一次运行")
+    if len({r.version_id for r in runs}) > 1 or len({r.task for r in runs}) > 1:
+        raise EvalHubError("这些运行不在同一个评测集版本上，不能算稳定性")
+    out = stability_from([{x.case.key: (x.correct, x.predicted, x.gold) for x in r.results} for r in runs])
+    out["run_ids"] = [r.id for r in runs]
+    out["ref"] = runs[0].version.ref
+    out["tokens"] = [r.metrics.get("tokens") for r in runs]
+    configs = {(r.code_hash, r.prompt_hash, r.policy_hash, str(r.models), str(r.params)) for r in runs}
+    out["same_config"] = len(configs) == 1
+    return out
+
+
+def format_stability(st: dict, limit: int = 20) -> str:
+    k = st["runs"]
+    lines = [f"稳定性：{k} 次运行 {st.get('run_ids', '')}，评测集 {st.get('ref', '')}，{st['scored']} 条参与打分"]
+    if not st.get("same_config", True):
+        lines.append("注意：这几次运行的代码、提示词、模型或参数不完全一样，差异不全是随机性")
+    if st["mean"] is None:
+        return "\n".join(lines + ["没有可打分的用例"])
+    lines.append("每次准确率：" + "、".join(f"{a:.1%}" for a in st["accuracy"])
+                 + f"；均值 {st['mean']:.1%} ± {st['std']:.1%}")
+    lines.append(f"pass^{k}（{k} 次都对）{st['pass_all']:.1%}；pass@{k}（至少对一次）{st['pass_any']:.1%}")
+    lines.append("每次误通过：" + "、".join(str(x) for x in st["false_approve"]))
+    lines.append(f"结论不稳定的用例 {len(st['unstable'])} 条" + ("：" if st["unstable"] else ""))
+    for u in st["unstable"][:limit]:
+        lines.append(f"  {u['key']} 标准答案 {u['gold']}：{' / '.join(str(p) for p in u['predicted'])}"
+                     f"（{u['correct']}/{k} 次对）")
+    if len(st["unstable"]) > limit:
+        lines.append(f"  …… 另有 {len(st['unstable']) - limit} 条")
+    return "\n".join(lines)

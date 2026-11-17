@@ -72,8 +72,12 @@ def _check_trip(c: Claim, r: dict) -> str:
     return ""
 
 
-def apply_findings(claim: Claim, submitted: dict, box: ToolBox, policy: PolicyConfig) -> tuple[Claim, list[Finding]]:
-    """返回补充了证据的报销单副本和每条证据的处理结果。原报销单不改。"""
+def apply_findings(claim: Claim, submitted: dict, box: ToolBox, policy: PolicyConfig,
+                   validate: bool = True, auto_adopt: bool = True) -> tuple[Claim, list[Finding]]:
+    """返回补充了证据的报销单副本和每条证据的处理结果。原报销单不改。
+
+    validate、auto_adopt 只在消融实验里关掉：validate=False 时模型引用的记录不做任何校验直接采纳
+    （trust_model）；auto_adopt=False 时唯一确定的事实也只在模型引用时才采纳（no_auto_adopt）。"""
     c = claim.model_copy(deep=True)
     out: list[Finding] = []
 
@@ -93,7 +97,7 @@ def apply_findings(claim: Claim, submitted: dict, box: ToolBox, policy: PolicyCo
         if rec is not None:
             return ref, rec, False
         found = [(rid, r) for rid, (k, r) in box.ledger.items() if k == kind and match(r)]
-        if len(found) == 1:
+        if auto_adopt and len(found) == 1:
             return found[0][0], found[0][1], True
         return "", None, False
 
@@ -101,7 +105,7 @@ def apply_findings(claim: Claim, submitted: dict, box: ToolBox, policy: PolicyCo
     ref, rec, auto = unique_fact("verification_id", "invoice", lambda r: True)
     note = "（Agent 未引用，按查验结果自动采纳）" if auto else ""
     if rec is not None:
-        if rec.get("status") != "正常":
+        if validate and rec.get("status") != "正常":
             out.append(Finding("invoice", ref, False, f"税务登记的发票状态为 {rec.get('status')}{note}"))
         else:
             changed = []
@@ -115,7 +119,7 @@ def apply_findings(claim: Claim, submitted: dict, box: ToolBox, policy: PolicyCo
 
     ref, rec = lookup("preapproval_id", "preapproval")
     if rec is not None:
-        why = _check_preapproval(c, rec)
+        why = _check_preapproval(c, rec) if validate else ""
         if why:
             out.append(Finding("preapproval", ref, False, why))
         else:
@@ -125,18 +129,18 @@ def apply_findings(claim: Claim, submitted: dict, box: ToolBox, policy: PolicyCo
 
     ref, rec = lookup("travel_request_id", "travel_request")
     if rec is not None:
-        why = _check_trip(c, rec)
+        why = _check_trip(c, rec) if validate else ""
         if why:
             out.append(Finding("travel_request", ref, False, why))
         else:
-            c.trip_start, c.trip_end = rec["start"], rec["end"]
+            c.trip_start, c.trip_end = rec.get("start"), rec.get("end")
             c.city = c.city or rec.get("city")
-            out.append(Finding("travel_request", ref, True, f"出差 {rec.get('city')} {rec['start']}~{rec['end']}，已批准"))
+            out.append(Finding("travel_request", ref, True, f"出差 {rec.get('city')} {rec.get('start')}~{rec.get('end')}，已批准"))
 
     ref, rec, auto = unique_fact("merchant_id", "merchant", lambda r: same_name(r.get("name"), c.invoice.seller))
     note = "（Agent 未引用，按登记自动采纳）" if auto else ""
     if rec is not None:
-        if not same_name(rec.get("name"), c.invoice.seller):
+        if validate and not same_name(rec.get("name"), c.invoice.seller):
             out.append(Finding("merchant", ref, False, f"登记名称“{rec.get('name')}”与发票销售方“{c.invoice.seller}”不一致"))
         else:
             c.merchant = {"category": rec.get("category", ""), "scope": rec.get("scope", "")}

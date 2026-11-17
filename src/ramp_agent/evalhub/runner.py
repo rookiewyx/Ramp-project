@@ -96,7 +96,8 @@ def run_policy_eval(s: Session, v: DatasetVersion, *, judge=None, note: str = ""
     settings = get_settings()
     run = _start(s, v, "policy", note, gold,
                  params={"invoice_fields": source, "llm": judge is not None, "workers": workers,
-                         **({"agent": agent.model, "agent_max_steps": agent.max_steps, "systems": systems} if agent else {})},
+                         **({"agent": agent.model, "agent_max_steps": agent.max_steps, "systems": systems,
+                            "ablations": sorted(agent.ablations)} if agent else {})},
                  models={"llm": settings.llm_model if judge is not None else None,
                          **({"agent": agent.model} if agent else {})})
     cases = list(v.cases)
