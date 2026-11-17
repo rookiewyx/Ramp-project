@@ -2,6 +2,7 @@
 # LoRA 微调。数据是 scripts/build_scid_sft.py 生成的 sft.zip，解压在 $HOME/sft。
 #   bash train.sh                    # Qwen3.5-4B
 #   MODEL=Qwen3.5-2B bash train.sh   # 2B 对照
+#   bash train.sh --max_steps 20 --eval_steps 1000 --save_steps 1000   # 试跑 20 步，看速度和显存
 set -euo pipefail
 MODEL=${MODEL:-Qwen3.5-4B}
 DATA=${DATA:-$HOME/sft}
@@ -21,6 +22,7 @@ swift sft \
     --add_non_thinking_prefix true \
     --loss_scale ignore_empty_think \
     --torch_dtype bfloat16 \
+    --attn_impl sdpa \
     --num_train_epochs "$EPOCHS" \
     --per_device_train_batch_size "$BS" \
     --per_device_eval_batch_size "$BS" \
@@ -41,6 +43,7 @@ swift sft \
     --dataset_num_proc 8 \
     --dataloader_num_workers 8 \
     --load_from_cache_file true \
-    --output_dir "$OUT" 2>&1 | tee "$HOME/train_$MODEL.log"
+    --output_dir "$OUT" \
+    "$@" 2>&1 | tee "$HOME/train_$MODEL.log"
 
 echo "训练完成。最好的检查点：$(ls -d "$OUT"/v*/checkpoint-* | tail -1)"
