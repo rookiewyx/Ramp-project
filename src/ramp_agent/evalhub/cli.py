@@ -38,24 +38,35 @@ def _path(p: str) -> Path:
 
 
 # ---------------- 模型连接 ----------------
-def _probe(client, what: str) -> bool:
-    try:
-        client.with_options(timeout=10, max_retries=0).models.list()
-    except openai.AuthenticationError:
-        sys.exit(f"[evalhub] {what}的 API Key 无效，请检查 .env")
-    except (openai.APIConnectionError, openai.APITimeoutError) as exc:
-        print(f"[evalhub] {what} {client.base_url} 连不上（{type(exc).__name__}），本次不使用")
-        return False
-    except openai.APIStatusError:
-        pass
-    return True
+def _probe(client, what: str, flag: str) -> None:
+    """启动前确认模型连得上。连不上就退出，不悄悄降级：
+
+    以前连不上时会打印一行提示、改成不用模型继续跑，结果整批运行变成了“只用规则”，
+    看准确率才发现（#32、#47–#51 都是这样作废的）。不想用模型要显式加 flag。网络偶尔抖动，先重试几次。"""
+    import time
+
+    last = None
+    for attempt in range(3):
+        try:
+            client.with_options(timeout=15, max_retries=0).models.list()
+            return
+        except openai.AuthenticationError:
+            sys.exit(f"[evalhub] {what}的 API Key 无效，请检查 .env")
+        except (openai.APIConnectionError, openai.APITimeoutError) as exc:
+            last = exc
+            time.sleep(2 * (attempt + 1))
+        except openai.APIStatusError:
+            return                      # 接口不支持列模型（部分兼容接口），但连得上
+    sys.exit(f"[evalhub] {what} {client.base_url} 连不上（{type(last).__name__}，重试 3 次）。"
+             f"检查网络和 .env；确实不想用模型就加 {flag}")
 
 
 def connect_llm():
     from ..policy import LLMJudge
 
     j = LLMJudge()
-    return j if _probe(j.client, "大模型") else None
+    _probe(j.client, "大模型", "--no-llm")
+    return j
 
 
 def connect_agent(kind: str | None, ablations: tuple[str, ...] = ()):
@@ -69,8 +80,7 @@ def connect_agent(kind: str | None, ablations: tuple[str, ...] = ()):
     if kind == "scripted":
         return Investigator(ScriptedPlanner(), "scripted", ablations=ablations)
     a = Investigator.from_settings(ablations=ablations)
-    if not _probe(a.client, "大模型（调查 Agent）"):
-        sys.exit("[evalhub] --agent llm 需要可用的大模型")
+    _probe(a.client, "大模型（调查 Agent）", "--agent scripted")
     return a
 
 
@@ -78,7 +88,8 @@ def connect_vlm():
     from ..extraction import OpenAICompatibleVLM
 
     v = OpenAICompatibleVLM()
-    return v if _probe(v.client, "视觉模型") else None
+    _probe(v.client, "视觉模型", "--no-vlm")
+    return v
 
 
 # ---------------- 命令 ----------------
